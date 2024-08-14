@@ -1,0 +1,6 @@
+# nix stuff
+/.direnv
+
+# backend
+/target
+.env
