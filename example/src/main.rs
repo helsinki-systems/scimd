@@ -19,6 +19,15 @@ impl scimd::Service for Service {
         Ok(scimd::HttpResponse::Ok().finish())
     }
 
+    async fn patch_user(
+        &self,
+        id: scimd::Uuid,
+        op: scimd::models::PatchOp,
+    ) -> Result<scimd::HttpResponse, Box<dyn std::error::Error>> {
+        scimd::info!("patch_user: {} {:?}", id, op);
+        Ok(scimd::HttpResponse::Ok().finish())
+    }
+
     async fn delete_user(
         &self,
         id: scimd::Uuid,

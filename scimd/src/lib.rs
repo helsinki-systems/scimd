@@ -27,6 +27,14 @@ pub trait Service {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
+    async fn patch_user(
+        &self,
+        _id: Uuid,
+        _op: models::PatchOp,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+        Ok(HttpResponse::MethodNotAllowed().finish())
+    }
+
     async fn delete_user(&self, _id: Uuid) -> Result<HttpResponse, Box<dyn std::error::Error>> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
@@ -42,6 +50,14 @@ pub trait Service {
         &self,
         _id: Uuid,
         _group: models::Group,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+        Ok(HttpResponse::MethodNotAllowed().finish())
+    }
+
+    async fn patch_group(
+        &self,
+        _id: Uuid,
+        _op: models::PatchOp,
     ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
@@ -79,6 +95,14 @@ async fn replace_user(
     state.service.replace_user(*id, user.into_inner()).await
 }
 
+async fn patch_user(
+    state: web::Data<State>,
+    id: web::Path<Uuid>,
+    user: web::Json<models::PatchOp>,
+) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    state.service.patch_user(*id, user.into_inner()).await
+}
+
 async fn delete_user(
     state: web::Data<State>,
     id: web::Path<Uuid>,
@@ -99,6 +123,14 @@ async fn replace_group(
     group: web::Json<models::Group>,
 ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
     state.service.replace_group(*id, group.into_inner()).await
+}
+
+async fn patch_group(
+    state: web::Data<State>,
+    id: web::Path<Uuid>,
+    group: web::Json<models::PatchOp>,
+) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    state.service.patch_group(*id, group.into_inner()).await
 }
 
 async fn delete_group(
@@ -124,16 +156,21 @@ impl App {
         HttpServer::new(move || {
             actix_web::App::new()
                 .app_data(actix_web::web::Data::new(state.clone()))
-                .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::NormalizePath::trim())
+                .wrap(
+                    actix_web::middleware::Logger::default()
+                        .log_target(env!("CARGO_PKG_NAME").to_string()),
+                )
                 .service(
                     web::scope("/v2")
                         .wrap(middleware::token())
                         .route("/Users", web::post().to(create_user))
                         .route("/Users/{id}", web::put().to(replace_user))
+                        .route("/Users/{id}", web::patch().to(patch_user))
                         .route("/Users/{id}", web::delete().to(delete_user))
                         .route("/Groups", web::post().to(create_group))
                         .route("/Groups/{id}", web::put().to(replace_group))
+                        .route("/Groups/{id}", web::patch().to(patch_group))
                         .route("/Groups/{id}", web::delete().to(delete_group)),
                 )
         })
