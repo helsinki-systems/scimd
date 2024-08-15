@@ -30,10 +30,13 @@ impl scimd::Service for Service {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    dotenvy::dotenv().ok();
+
     let service = std::sync::Arc::new(Service {});
     let server = scimd::AppBuilder::new(service)
         .worker(1)
         .bind("127.0.0.1:5000".to_string())
+        .bearer_token(std::env::var("EXAMPLE_SERVICE_BEARER_TOKEN").ok())
         .build();
     server.run().await?;
 

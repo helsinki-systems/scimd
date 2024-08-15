@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpServer};
 
+pub mod middleware;
 pub mod models;
 
 pub use actix_web::HttpResponse;
@@ -54,11 +55,13 @@ pub struct App {
     service: Arc<dyn Service + Send + Sync>,
     workers: usize,
     bind: String,
+    bearer_token: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct State {
     service: Arc<dyn Service + Send + Sync>,
+    bearer_token: Option<String>,
 }
 
 async fn create_user(
@@ -111,7 +114,11 @@ impl App {
 
         let state = State {
             service: self.service.clone(),
+            bearer_token: self.bearer_token.clone(),
         };
+        if self.bearer_token.is_none() {
+            log::warn!("scimd runs without authorization. Please pass in a token!");
+        }
 
         log::info!("listening on {}", self.bind);
         HttpServer::new(move || {
@@ -119,12 +126,16 @@ impl App {
                 .app_data(actix_web::web::Data::new(state.clone()))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::NormalizePath::trim())
-                .route("/v2/Users", web::post().to(create_user))
-                .route("/v2/Users/{id}", web::put().to(replace_user))
-                .route("/v2/Users/{id}", web::delete().to(delete_user))
-                .route("/v2/Groups", web::post().to(create_group))
-                .route("/v2/Groups/{id}", web::put().to(replace_group))
-                .route("/v2/Groups/{id}", web::delete().to(delete_group))
+                .service(
+                    web::scope("/v2")
+                        .wrap(middleware::token())
+                        .route("/Users", web::post().to(create_user))
+                        .route("/Users/{id}", web::put().to(replace_user))
+                        .route("/Users/{id}", web::delete().to(delete_user))
+                        .route("/Groups", web::post().to(create_group))
+                        .route("/Groups/{id}", web::put().to(replace_group))
+                        .route("/Groups/{id}", web::delete().to(delete_group)),
+                )
         })
         .workers(self.workers)
         .bind(&self.bind)?
@@ -138,6 +149,7 @@ pub struct AppBuilder {
     service: Arc<dyn Service + Send + Sync>,
     workers: usize,
     bind: String,
+    bearer_token: Option<String>,
 }
 
 impl AppBuilder {
@@ -146,6 +158,7 @@ impl AppBuilder {
             service,
             workers: 2,
             bind: "127.0.0.1:8080".to_owned(),
+            bearer_token: None,
         }
     }
 
@@ -159,11 +172,17 @@ impl AppBuilder {
         self
     }
 
+    pub fn bearer_token(mut self, bearer_token: Option<String>) -> Self {
+        self.bearer_token = bearer_token;
+        self
+    }
+
     pub fn build(self) -> App {
         App {
             service: self.service,
             workers: self.workers,
             bind: self.bind,
+            bearer_token: self.bearer_token,
         }
     }
 }
