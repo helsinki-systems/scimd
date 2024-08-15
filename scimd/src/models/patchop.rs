@@ -20,11 +20,11 @@ impl Default for PatchOp {
 pub struct Operation {
     op: String,
     path: String,
-    value: Option<String>,
+    value: Option<serde_json::Value>,
 }
 
 impl Operation {
-    pub fn add(path: String, value: Option<String>) -> Self {
+    pub fn add(path: String, value: Option<serde_json::Value>) -> Self {
         Self {
             op: "add".into(),
             path,
@@ -40,7 +40,7 @@ impl Operation {
         }
     }
 
-    pub fn replace(path: String, value: Option<String>) -> Self {
+    pub fn replace(path: String, value: Option<serde_json::Value>) -> Self {
         Self {
             op: "replace".into(),
             path,
