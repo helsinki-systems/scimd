@@ -22,7 +22,7 @@ impl std::fmt::Display for Error {
 
 impl actix_web::error::ResponseError for Error {
     fn error_response(&self) -> HttpResponse {
-        log::error!("handler error response: {}", self);
+        log::error!("handler error response: {self}");
         HttpResponse::build(self.status_code()).finish()
     }
 
