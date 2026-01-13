@@ -209,7 +209,33 @@ impl App {
             tracing::info!("Listening on Unix socket bound to {}", bind);
             server = server.bind_uds(bind)?;
         }
-        server.run().await?;
+
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+        let server = server.disable_signals().run();
+        tokio::pin!(server);
+        tokio::select! {
+            r = sigint.recv() => {
+                tracing::info!("Received interrupt signal - shutting down gracefully");
+                r.unwrap();
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+                let ((), r) = tokio::join!(server.handle().stop(true), server);
+                r.unwrap();
+            },
+            r = sigterm.recv() => {
+                tracing::info!("Received term signal - shutting down gracefully");
+                r.unwrap();
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+                let ((), r) = tokio::join!(server.handle().stop(true), server);
+                r.unwrap();
+            },
+            r = &mut server => {
+                r.unwrap();
+            }
+        };
         Ok(())
     }
 }

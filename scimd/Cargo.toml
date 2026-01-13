@@ -9,6 +9,8 @@ actix-web = { workspace = true, default-features = false, features = [ "macros"]
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
+sd-notify.workspace = true
+tokio = { workspace = true, features = ["full"] }
 
 tracing-actix-web.workspace = true
 tracing-log.workspace = true
