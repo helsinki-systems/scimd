@@ -41,11 +41,10 @@ impl scimd::Service for Service {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let service = std::sync::Arc::new(Service {});
-    let server = scimd::AppBuilder::new(service)
-        .worker(1)
-        .bind("127.0.0.1:5000".to_string())
-        .bearer_token(std::env::var("EXAMPLE_SERVICE_BEARER_TOKEN").ok())
+    let args = scimd::parse_args();
+    let server = scimd::AppBuilder::new(std::sync::Arc::new(Service {}))
+        .args(args)
+        .bearer_token(dotenvy::var("EXAMPLE_SERVICE_BEARER_TOKEN").ok())
         .build();
     server.run().await?;
 

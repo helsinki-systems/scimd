@@ -3,13 +3,15 @@ use std::sync::Arc;
 use actix_web::{HttpServer, web};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::layer::SubscriberExt as _;
+use uuid::Uuid;
 
 pub mod middleware;
 pub mod models;
+mod opts;
 
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
-use uuid::Uuid;
+pub use opts::parse_args;
 
 #[async_trait]
 pub trait Service {
@@ -71,7 +73,8 @@ pub trait Service {
 pub struct App {
     service: Arc<dyn Service + Send + Sync>,
     workers: usize,
-    bind: String,
+    bind: Vec<String>,
+    unix_bind: Vec<String>,
     bearer_token: Option<String>,
 }
 
@@ -176,8 +179,7 @@ impl App {
             tracing::warn!("scimd runs without authorization. Please pass in a token!");
         }
 
-        tracing::info!("listening on {}", self.bind);
-        HttpServer::new(move || {
+        let mut server = HttpServer::new(move || {
             actix_web::App::new()
                 .app_data(actix_web::web::Data::new(state.clone()))
                 .wrap(actix_web::middleware::NormalizePath::trim())
@@ -197,10 +199,17 @@ impl App {
                 .route("/health", web::get().to(health_check))
                 .default_service(web::to(not_found))
         })
-        .workers(self.workers)
-        .bind(&self.bind)?
-        .run()
-        .await?;
+        .workers(self.workers);
+
+        for bind in &self.bind {
+            tracing::info!("Listening on TCP socket bound to {}", bind);
+            server = server.bind(bind)?;
+        }
+        for bind in &self.unix_bind {
+            tracing::info!("Listening on Unix socket bound to {}", bind);
+            server = server.bind_uds(bind)?;
+        }
+        server.run().await?;
         Ok(())
     }
 }
@@ -208,7 +217,8 @@ impl App {
 pub struct AppBuilder {
     service: Arc<dyn Service + Send + Sync>,
     workers: usize,
-    bind: String,
+    bind: Vec<String>,
+    unix_bind: Vec<String>,
     bearer_token: Option<String>,
 }
 
@@ -217,7 +227,8 @@ impl AppBuilder {
         Self {
             service,
             workers: 2,
-            bind: "127.0.0.1:8080".to_owned(),
+            bind: vec![],
+            unix_bind: vec![],
             bearer_token: None,
         }
     }
@@ -227,8 +238,20 @@ impl AppBuilder {
         self
     }
 
-    pub fn bind(mut self, bind: String) -> Self {
-        self.bind = bind;
+    pub fn add_bind(mut self, bind: String) -> Self {
+        self.bind.push(bind);
+        self
+    }
+
+    pub fn add_unix_bind(mut self, bind: String) -> Self {
+        self.unix_bind.push(bind);
+        self
+    }
+
+    pub fn args(mut self, args: opts::Args) -> Self {
+        self.bind = args.bind;
+        self.unix_bind = args.unix_bind;
+        self.workers = args.workers;
         self
     }
 
@@ -241,7 +264,12 @@ impl AppBuilder {
         App {
             service: self.service,
             workers: self.workers,
-            bind: self.bind,
+            bind: if self.bind.is_empty() && self.unix_bind.is_empty() {
+                vec!["127.0.0.1:8080".into()]
+            } else {
+                self.bind
+            },
+            unix_bind: self.unix_bind,
             bearer_token: self.bearer_token,
         }
     }
