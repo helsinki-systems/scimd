@@ -5,67 +5,47 @@ use tracing_actix_web::TracingLogger;
 use tracing_subscriber::layer::SubscriberExt as _;
 use uuid::Uuid;
 
+mod error;
 pub mod middleware;
 pub mod models;
 mod opts;
 
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
+pub use error::Result;
 pub use opts::parse_args;
 
 #[async_trait]
 pub trait Service {
-    async fn create_user(
-        &self,
-        _user: models::User,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn create_user(&self, _user: models::User) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn replace_user(
-        &self,
-        _id: Uuid,
-        _user: models::User,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn replace_user(&self, _id: Uuid, _user: models::User) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn patch_user(
-        &self,
-        _id: Uuid,
-        _op: models::PatchOp,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn patch_user(&self, _id: Uuid, _op: models::PatchOp) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn delete_user(&self, _id: Uuid) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn delete_user(&self, _id: Uuid) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn create_group(
-        &self,
-        _group: models::Group,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn create_group(&self, _group: models::Group) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn replace_group(
-        &self,
-        _id: Uuid,
-        _group: models::Group,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn replace_group(&self, _id: Uuid, _group: models::Group) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn patch_group(
-        &self,
-        _id: Uuid,
-        _op: models::PatchOp,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn patch_group(&self, _id: Uuid, _op: models::PatchOp) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 
-    async fn delete_group(&self, _id: Uuid) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    async fn delete_group(&self, _id: Uuid) -> Result<HttpResponse> {
         Ok(HttpResponse::MethodNotAllowed().finish())
     }
 }
@@ -87,7 +67,7 @@ pub struct State {
 async fn create_user(
     state: web::Data<State>,
     user: web::Json<models::User>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.create_user(user.into_inner()).await
 }
 
@@ -95,7 +75,7 @@ async fn replace_user(
     state: web::Data<State>,
     id: web::Path<Uuid>,
     user: web::Json<models::User>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.replace_user(*id, user.into_inner()).await
 }
 
@@ -103,21 +83,18 @@ async fn patch_user(
     state: web::Data<State>,
     id: web::Path<Uuid>,
     user: web::Json<models::PatchOp>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.patch_user(*id, user.into_inner()).await
 }
 
-async fn delete_user(
-    state: web::Data<State>,
-    id: web::Path<Uuid>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+async fn delete_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
     state.service.delete_user(*id).await
 }
 
 async fn create_group(
     state: web::Data<State>,
     group: web::Json<models::Group>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.create_group(group.into_inner()).await
 }
 
@@ -125,7 +102,7 @@ async fn replace_group(
     state: web::Data<State>,
     id: web::Path<Uuid>,
     group: web::Json<models::Group>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.replace_group(*id, group.into_inner()).await
 }
 
@@ -133,14 +110,11 @@ async fn patch_group(
     state: web::Data<State>,
     id: web::Path<Uuid>,
     group: web::Json<models::PatchOp>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+) -> Result<HttpResponse> {
     state.service.patch_group(*id, group.into_inner()).await
 }
 
-async fn delete_group(
-    state: web::Data<State>,
-    id: web::Path<Uuid>,
-) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+async fn delete_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
     state.service.delete_group(*id).await
 }
 
@@ -154,7 +128,7 @@ async fn not_found() -> actix_web::HttpResponse {
 }
 
 impl App {
-    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&self) -> anyhow::Result<()> {
         tracing_log::LogTracer::init()?;
         let (log_env_filter, _) = tracing_subscriber::reload::Layer::new(
             tracing_subscriber::filter::EnvFilter::try_from_default_env()
@@ -299,8 +273,4 @@ impl AppBuilder {
             bearer_token: self.bearer_token,
         }
     }
-}
-
-pub fn run() {
-    println!("Hello, world!");
 }

@@ -6,10 +6,12 @@ publish = false
 
 [dependencies]
 actix-web = { workspace = true, default-features = false, features = [ "macros"] }
+anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
 sd-notify.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 tracing-actix-web.workspace = true
