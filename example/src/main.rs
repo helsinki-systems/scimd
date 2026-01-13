@@ -6,39 +6,39 @@ impl scimd::Service for Service {
         &self,
         user: scimd::models::User,
     ) -> Result<scimd::HttpResponse, Box<dyn std::error::Error>> {
-        scimd::info!("create_user: {:?}", user);
+        tracing::info!("create_user: {:?}", user);
         Ok(scimd::HttpResponse::Ok().finish())
     }
 
     async fn replace_user(
         &self,
-        id: scimd::Uuid,
+        id: uuid::Uuid,
         user: scimd::models::User,
     ) -> Result<scimd::HttpResponse, Box<dyn std::error::Error>> {
-        scimd::info!("replace_user: {} {:?}", id, user);
+        tracing::info!("replace_user: {} {:?}", id, user);
         Ok(scimd::HttpResponse::Ok().finish())
     }
 
     async fn patch_user(
         &self,
-        id: scimd::Uuid,
+        id: uuid::Uuid,
         op: scimd::models::PatchOp,
     ) -> Result<scimd::HttpResponse, Box<dyn std::error::Error>> {
-        scimd::info!("patch_user: {} {:?}", id, op);
+        tracing::info!("patch_user: {} {:?}", id, op);
         Ok(scimd::HttpResponse::Ok().finish())
     }
 
     async fn delete_user(
         &self,
-        id: scimd::Uuid,
+        id: uuid::Uuid,
     ) -> Result<scimd::HttpResponse, Box<dyn std::error::Error>> {
-        scimd::info!("delete_user: {}", id);
+        tracing::info!("delete_user: {}", id);
         Ok(scimd::HttpResponse::Ok().finish())
     }
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     let service = std::sync::Arc::new(Service {});
