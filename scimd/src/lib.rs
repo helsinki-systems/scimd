@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{web, HttpServer};
+use actix_web::{HttpServer, web};
 
 pub mod middleware;
 pub mod models;

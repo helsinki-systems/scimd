@@ -1,5 +1,5 @@
-use actix_web::{body, dev, error::ResponseError as _, http, web, HttpResponse};
-use futures_util::{future::LocalBoxFuture, FutureExt as _};
+use actix_web::{HttpResponse, body, dev, error::ResponseError as _, http, web};
+use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use std::rc::Rc;
 use std::{future, task};
 
