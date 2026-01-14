@@ -1,38 +1,9 @@
-use actix_web::{HttpResponse, body, dev, error::ResponseError as _, http, web};
+use actix_web::{body, dev, error::ResponseError as _, web};
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use std::rc::Rc;
 use std::{future, task};
 
 use crate::State;
-
-#[derive(Debug)]
-pub enum Error {
-    Unauthorized,
-    Fatal,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unauthorized => write!(f, "unauthorized"),
-            Self::Fatal => write!(f, "fatal"),
-        }
-    }
-}
-
-impl actix_web::error::ResponseError for Error {
-    fn error_response(&self) -> HttpResponse {
-        tracing::error!("handler error response: {self}");
-        HttpResponse::build(self.status_code()).finish()
-    }
-
-    fn status_code(&self) -> http::StatusCode {
-        match *self {
-            Self::Unauthorized => http::StatusCode::UNAUTHORIZED,
-            Self::Fatal => http::StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-}
 
 pub struct TokenService<S> {
     service: Rc<S>,
@@ -41,28 +12,30 @@ pub struct TokenService<S> {
 const AUTH_HEADER_NAME: &str = "Authorization";
 const AUTH_TOKEN_PREFIX: &str = "Bearer ";
 
-pub async fn validate_token(req: &dev::ServiceRequest) -> Result<(), Error> {
+pub async fn validate_token(req: &dev::ServiceRequest) -> Result<(), super::Error> {
     let extracted_token = req
         .headers()
         .get(AUTH_HEADER_NAME)
         .and_then(|v| v.to_str().ok())
         .map(|t| {
             t.strip_prefix(AUTH_TOKEN_PREFIX)
-                .ok_or(Error::Unauthorized)
+                .ok_or(super::Error::Unauthorized)
                 .map(|v| v.to_owned())
         })
         .map_or(Ok(None), |v| v.map(Some))?;
 
     let bt = req
         .app_data::<web::Data<State>>()
-        .ok_or(Error::Fatal)?
+        .ok_or(super::Error::InternalError(anyhow::anyhow!(
+            "No internal app state found"
+        )))?
         .bearer_token
         .clone();
 
     if extracted_token == bt {
         Ok(())
     } else {
-        Err(Error::Unauthorized)
+        Err(super::Error::Unauthorized)
     }
 }
 

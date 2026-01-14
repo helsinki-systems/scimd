@@ -11,6 +11,9 @@ pub enum Error {
     #[error("Conflict")]
     Conflict,
 
+    #[error("Unauthorized")]
+    Unauthorized,
+
     #[error("Resouce {0} not found")]
     NotFound(uuid::Uuid),
 }
@@ -18,7 +21,7 @@ pub enum Error {
 impl Error {
     fn get_detail(&self) -> Option<String> {
         match &self {
-            Error::InternalError(_) => None,
+            Self::InternalError(_) | Self::Unauthorized => None,
             _ => Some(self.to_string()),
         }
     }
@@ -30,6 +33,7 @@ impl ResponseError for Error {
             Self::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::MethodNotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::Conflict => StatusCode::CONFLICT,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
         }
     }

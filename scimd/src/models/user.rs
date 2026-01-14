@@ -59,7 +59,7 @@ pub struct User {
 
 impl Default for User {
     fn default() -> Self {
-        User {
+        Self {
             schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:User".to_string()],
             user_name: "".to_string(),
             id: None,

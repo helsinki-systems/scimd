@@ -78,12 +78,35 @@ pub struct App {
     bind: Vec<String>,
     unix_bind: Vec<String>,
     bearer_token: Option<String>,
+
+    enable_patch: bool,
+    filter_config: FilterConfig,
+    enable_sort: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct FilterConfig {
+    enabled: bool,
+    max_results: Option<u32>,
+}
+
+impl FilterConfig {
+    pub fn new(enabled: bool, max_results: Option<u32>) -> Self {
+        Self {
+            enabled,
+            max_results,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct State {
     service: Arc<dyn Service + Send + Sync>,
     bearer_token: Option<String>,
+
+    enable_patch: bool,
+    filter_settings: FilterConfig,
+    enable_sort: bool,
 }
 
 fn construct_response(body: impl serde::Serialize) -> Result<HttpResponse> {
@@ -180,6 +203,23 @@ async fn delete_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<Ht
     Ok(HttpResponse::NoContent().finish())
 }
 
+async fn service_provider(state: web::Data<State>) -> Result<HttpResponse> {
+    let mut config = models::ServiceProviderConfig::default()
+        .with_patch(state.enable_patch)
+        .with_filter(
+            state.filter_settings.enabled,
+            state.filter_settings.max_results,
+        )
+        .with_sort(state.enable_sort);
+    if state.bearer_token.is_some() {
+        config = config.add_authentication_scheme(
+            models::service_provider_config::AuthenticationScheme::bearer(),
+        );
+    }
+
+    construct_response(config)
+}
+
 async fn health_check() -> HttpResponse {
     HttpResponse::Ok().body("OK")
 }
@@ -219,6 +259,9 @@ impl App {
         let state = State {
             service: self.service.clone(),
             bearer_token: self.bearer_token.clone(),
+            enable_patch: self.enable_patch,
+            filter_settings: self.filter_config,
+            enable_sort: self.enable_sort,
         };
         if self.bearer_token.is_none() {
             tracing::warn!("scimd runs without authorization. Please pass in a token!");
@@ -256,6 +299,10 @@ impl App {
                                 .route(web::put().to(replace_group))
                                 .route(web::patch().to(patch_group))
                                 .route(web::delete().to(delete_group)),
+                        )
+                        .service(
+                            web::resource("/ServiceProviderConfig")
+                                .route(web::get().to(service_provider)),
                         ),
                 )
                 .route("/health", web::get().to(health_check))
@@ -308,6 +355,10 @@ pub struct AppBuilder {
     bind: Vec<String>,
     unix_bind: Vec<String>,
     bearer_token: Option<String>,
+
+    enable_patch: bool,
+    filter_settings: FilterConfig,
+    enable_sort: bool,
 }
 
 impl AppBuilder {
@@ -318,6 +369,12 @@ impl AppBuilder {
             bind: vec![],
             unix_bind: vec![],
             bearer_token: None,
+            enable_patch: false,
+            filter_settings: FilterConfig {
+                enabled: false,
+                max_results: None,
+            },
+            enable_sort: false,
         }
     }
 
@@ -348,6 +405,21 @@ impl AppBuilder {
         self
     }
 
+    pub fn with_patch(mut self, supported: bool) -> Self {
+        self.enable_patch = supported;
+        self
+    }
+
+    pub fn with_filter(mut self, supported: bool, max_results: Option<u32>) -> Self {
+        self.filter_settings = FilterConfig::new(supported, max_results);
+        self
+    }
+
+    pub fn with_sort(mut self, supported: bool) -> Self {
+        self.enable_sort = supported;
+        self
+    }
+
     pub fn build(self) -> App {
         App {
             service: self.service,
@@ -359,6 +431,10 @@ impl AppBuilder {
             },
             unix_bind: self.unix_bind,
             bearer_token: self.bearer_token,
+
+            enable_patch: self.enable_patch,
+            filter_config: self.filter_settings,
+            enable_sort: self.enable_sort,
         }
     }
 }
