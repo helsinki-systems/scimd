@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{HttpServer, web};
+use actix_web::{HttpServer, http, web};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::layer::SubscriberExt as _;
 use uuid::Uuid;
@@ -12,41 +12,63 @@ mod opts;
 
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
-pub use error::Result;
+pub use error::{Error, Result};
 pub use opts::parse_args;
 
 #[async_trait]
 pub trait Service {
-    async fn create_user(&self, _user: models::User) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn list_user(
+        &self,
+        _filter: models::FilterQuery,
+    ) -> Result<models::ListResponse<models::User>> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn replace_user(&self, _id: Uuid, _user: models::User) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn create_user(&self, _user: models::User) -> Result<models::User> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn patch_user(&self, _id: Uuid, _op: models::PatchOp) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn get_user(&self, _id: Uuid) -> Result<models::User> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn delete_user(&self, _id: Uuid) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn replace_user(&self, _id: Uuid, _user: models::User) -> Result<models::User> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn create_group(&self, _group: models::Group) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn patch_user(&self, _id: Uuid, _op: models::PatchOp) -> Result<models::User> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn replace_group(&self, _id: Uuid, _group: models::Group) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn delete_user(&self, _id: Uuid) -> Result<()> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn patch_group(&self, _id: Uuid, _op: models::PatchOp) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn list_groups(
+        &self,
+        _filter: models::FilterQuery,
+    ) -> Result<models::ListResponse<models::User>> {
+        Err(Error::MethodNotImplemented)
     }
 
-    async fn delete_group(&self, _id: Uuid) -> Result<HttpResponse> {
-        Ok(HttpResponse::MethodNotAllowed().finish())
+    async fn create_group(&self, _group: models::Group) -> Result<models::Group> {
+        Err(Error::MethodNotImplemented)
+    }
+
+    async fn get_group(&self, _id: Uuid) -> Result<models::Group> {
+        Err(Error::MethodNotImplemented)
+    }
+
+    async fn replace_group(&self, _id: Uuid, _group: models::Group) -> Result<models::Group> {
+        Err(Error::MethodNotImplemented)
+    }
+
+    async fn patch_group(&self, _id: Uuid, _op: models::PatchOp) -> Result<models::Group> {
+        Err(Error::MethodNotImplemented)
+    }
+
+    async fn delete_group(&self, _id: Uuid) -> Result<()> {
+        Err(Error::MethodNotImplemented)
     }
 }
 
@@ -64,11 +86,31 @@ pub struct State {
     bearer_token: Option<String>,
 }
 
+fn construct_response(body: impl serde::Serialize) -> Result<HttpResponse> {
+    Ok(HttpResponse::Ok()
+        .append_header((http::header::CONTENT_TYPE, "application/scim+json"))
+        .json(body))
+}
+
+async fn list_user(
+    state: web::Data<State>,
+    query: web::Query<models::FilterQuery>,
+) -> Result<HttpResponse> {
+    let user = state.service.list_user(query.into_inner()).await?;
+    construct_response(user)
+}
+
 async fn create_user(
     state: web::Data<State>,
     user: web::Json<models::User>,
 ) -> Result<HttpResponse> {
-    state.service.create_user(user.into_inner()).await
+    let user = state.service.create_user(user.into_inner()).await?;
+    construct_response(user)
+}
+
+async fn get_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
+    let user = state.service.get_user(*id).await?;
+    construct_response(user)
 }
 
 async fn replace_user(
@@ -76,7 +118,8 @@ async fn replace_user(
     id: web::Path<Uuid>,
     user: web::Json<models::User>,
 ) -> Result<HttpResponse> {
-    state.service.replace_user(*id, user.into_inner()).await
+    let user = state.service.replace_user(*id, user.into_inner()).await?;
+    construct_response(user)
 }
 
 async fn patch_user(
@@ -84,18 +127,34 @@ async fn patch_user(
     id: web::Path<Uuid>,
     user: web::Json<models::PatchOp>,
 ) -> Result<HttpResponse> {
-    state.service.patch_user(*id, user.into_inner()).await
+    let user = state.service.patch_user(*id, user.into_inner()).await?;
+    construct_response(user)
 }
 
 async fn delete_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    state.service.delete_user(*id).await
+    state.service.delete_user(*id).await?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+async fn list_groups(
+    state: web::Data<State>,
+    query: web::Query<models::FilterQuery>,
+) -> Result<HttpResponse> {
+    let groups = state.service.list_groups(query.into_inner()).await?;
+    construct_response(groups)
 }
 
 async fn create_group(
     state: web::Data<State>,
     group: web::Json<models::Group>,
 ) -> Result<HttpResponse> {
-    state.service.create_group(group.into_inner()).await
+    let group = state.service.create_group(group.into_inner()).await?;
+    construct_response(group)
+}
+
+async fn get_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
+    let group = state.service.get_group(*id).await?;
+    construct_response(group)
 }
 
 async fn replace_group(
@@ -103,7 +162,8 @@ async fn replace_group(
     id: web::Path<Uuid>,
     group: web::Json<models::Group>,
 ) -> Result<HttpResponse> {
-    state.service.replace_group(*id, group.into_inner()).await
+    let group = state.service.replace_group(*id, group.into_inner()).await?;
+    construct_response(group)
 }
 
 async fn patch_group(
@@ -111,11 +171,13 @@ async fn patch_group(
     id: web::Path<Uuid>,
     group: web::Json<models::PatchOp>,
 ) -> Result<HttpResponse> {
-    state.service.patch_group(*id, group.into_inner()).await
+    let group = state.service.patch_group(*id, group.into_inner()).await?;
+    construct_response(group)
 }
 
 async fn delete_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    state.service.delete_group(*id).await
+    state.service.delete_group(*id).await?;
+    Ok(HttpResponse::NoContent().finish())
 }
 
 async fn health_check() -> HttpResponse {
@@ -125,6 +187,15 @@ async fn health_check() -> HttpResponse {
 #[allow(clippy::unused_async)]
 async fn not_found() -> actix_web::HttpResponse {
     actix_web::HttpResponse::NotFound().finish()
+}
+
+fn accept_scim_json(ctx: &actix_web::guard::GuardContext) -> bool {
+    ctx.head()
+        .headers()
+        .get(http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/scim+json"))
+        .unwrap_or(false)
 }
 
 impl App {
@@ -155,20 +226,37 @@ impl App {
 
         let mut server = HttpServer::new(move || {
             actix_web::App::new()
-                .app_data(actix_web::web::Data::new(state.clone()))
+                .app_data(web::Data::new(state.clone()))
                 .wrap(actix_web::middleware::NormalizePath::trim())
                 .wrap(TracingLogger::default())
                 .service(
                     web::scope("/v2")
+                        .guard(actix_web::guard::fn_guard(accept_scim_json))
                         .wrap(middleware::token())
-                        .route("/Users", web::post().to(create_user))
-                        .route("/Users/{id}", web::put().to(replace_user))
-                        .route("/Users/{id}", web::patch().to(patch_user))
-                        .route("/Users/{id}", web::delete().to(delete_user))
-                        .route("/Groups", web::post().to(create_group))
-                        .route("/Groups/{id}", web::put().to(replace_group))
-                        .route("/Groups/{id}", web::patch().to(patch_group))
-                        .route("/Groups/{id}", web::delete().to(delete_group)),
+                        .service(
+                            web::resource("/Users")
+                                .route(web::get().to(list_user))
+                                .route(web::post().to(create_user)),
+                        )
+                        .service(
+                            web::resource("/Users/{id}")
+                                .route(web::get().to(get_user))
+                                .route(web::put().to(replace_user))
+                                .route(web::patch().to(patch_user))
+                                .route(web::delete().to(delete_user)),
+                        )
+                        .service(
+                            web::resource("/Groups")
+                                .route(web::get().to(list_groups))
+                                .route(web::post().to(create_group)),
+                        )
+                        .service(
+                            web::resource("/Groups/{id}")
+                                .route(web::get().to(get_group))
+                                .route(web::put().to(replace_group))
+                                .route(web::patch().to(patch_group))
+                                .route(web::delete().to(delete_group)),
+                        ),
                 )
                 .route("/health", web::get().to(health_check))
                 .default_service(web::to(not_found))

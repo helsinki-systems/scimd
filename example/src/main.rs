@@ -2,32 +2,32 @@ struct Service {}
 
 #[scimd::async_trait]
 impl scimd::Service for Service {
-    async fn create_user(&self, user: scimd::models::User) -> scimd::Result<scimd::HttpResponse> {
+    async fn create_user(&self, user: scimd::models::User) -> scimd::Result<scimd::models::User> {
         tracing::info!("create_user: {:?}", user);
-        Ok(scimd::HttpResponse::Ok().finish())
+        Err(scimd::Error::MethodNotImplemented)
     }
 
     async fn replace_user(
         &self,
         id: uuid::Uuid,
         user: scimd::models::User,
-    ) -> scimd::Result<scimd::HttpResponse> {
+    ) -> scimd::Result<scimd::models::User> {
         tracing::info!("replace_user: {} {:?}", id, user);
-        Ok(scimd::HttpResponse::Ok().finish())
+        Err(scimd::Error::NotFound(id))
     }
 
     async fn patch_user(
         &self,
         id: uuid::Uuid,
         op: scimd::models::PatchOp,
-    ) -> scimd::Result<scimd::HttpResponse> {
+    ) -> scimd::Result<scimd::models::User> {
         tracing::info!("patch_user: {} {:?}", id, op);
-        Ok(scimd::HttpResponse::Ok().finish())
+        Err(scimd::Error::NotFound(id))
     }
 
-    async fn delete_user(&self, id: uuid::Uuid) -> scimd::Result<scimd::HttpResponse> {
+    async fn delete_user(&self, id: uuid::Uuid) -> scimd::Result<()> {
         tracing::info!("delete_user: {}", id);
-        Ok(scimd::HttpResponse::Ok().finish())
+        Ok(())
     }
 }
 
