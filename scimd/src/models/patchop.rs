@@ -18,9 +18,9 @@ impl Default for PatchOp {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Operation {
-    op: String,
-    path: String,
-    value: Option<serde_json::Value>,
+    pub op: String,
+    pub path: String,
+    pub value: Option<serde_json::Value>,
 }
 
 impl Operation {

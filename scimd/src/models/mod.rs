@@ -15,3 +15,9 @@ pub use list::ListResponse;
 pub use patchop::PatchOp;
 pub(crate) use service_provider_config::ServiceProviderConfig;
 pub use user::User;
+
+#[derive(serde::Serialize, Debug)]
+pub enum ValOrEmpty<T> {
+    Val(T),
+    Empty,
+}

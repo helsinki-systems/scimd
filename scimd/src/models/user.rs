@@ -170,7 +170,7 @@ pub struct Photo {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Group {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,

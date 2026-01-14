@@ -20,7 +20,7 @@ impl scimd::Service for Service {
         &self,
         id: uuid::Uuid,
         op: scimd::models::PatchOp,
-    ) -> scimd::Result<scimd::models::User> {
+    ) -> scimd::Result<scimd::models::ValOrEmpty<scimd::models::User>> {
         tracing::info!("patch_user: {} {:?}", id, op);
         Err(scimd::Error::NotFound(id))
     }

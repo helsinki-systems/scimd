@@ -36,7 +36,11 @@ pub trait Service {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn patch_user(&self, _id: Uuid, _op: models::PatchOp) -> Result<models::User> {
+    async fn patch_user(
+        &self,
+        _id: Uuid,
+        _op: models::PatchOp,
+    ) -> Result<models::ValOrEmpty<models::User>> {
         Err(Error::MethodNotImplemented)
     }
 
@@ -63,7 +67,11 @@ pub trait Service {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn patch_group(&self, _id: Uuid, _op: models::PatchOp) -> Result<models::Group> {
+    async fn patch_group(
+        &self,
+        _id: Uuid,
+        _op: models::PatchOp,
+    ) -> Result<models::ValOrEmpty<models::Group>> {
         Err(Error::MethodNotImplemented)
     }
 
@@ -150,8 +158,10 @@ async fn patch_user(
     id: web::Path<Uuid>,
     user: web::Json<models::PatchOp>,
 ) -> Result<HttpResponse> {
-    let user = state.service.patch_user(*id, user.into_inner()).await?;
-    construct_response(user)
+    match state.service.patch_user(*id, user.into_inner()).await? {
+        models::ValOrEmpty::Val(v) => construct_response(v),
+        models::ValOrEmpty::Empty => Ok(HttpResponse::NoContent().finish()),
+    }
 }
 
 async fn delete_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
@@ -194,8 +204,10 @@ async fn patch_group(
     id: web::Path<Uuid>,
     group: web::Json<models::PatchOp>,
 ) -> Result<HttpResponse> {
-    let group = state.service.patch_group(*id, group.into_inner()).await?;
-    construct_response(group)
+    match state.service.patch_group(*id, group.into_inner()).await? {
+        models::ValOrEmpty::Val(v) => construct_response(v),
+        models::ValOrEmpty::Empty => Ok(HttpResponse::NoContent().finish()),
+    }
 }
 
 async fn delete_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
