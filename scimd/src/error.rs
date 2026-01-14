@@ -16,12 +16,16 @@ pub enum Error {
 
     #[error("Resouce {0} not found")]
     NotFound(uuid::Uuid),
+
+    #[error("Bad request. Details={0}")]
+    BadRequest(String),
 }
 
 impl Error {
     fn get_detail(&self) -> Option<String> {
         match &self {
             Self::InternalError(_) | Self::Unauthorized => None,
+            Self::BadRequest(v) => Some(v.to_owned()),
             _ => Some(self.to_string()),
         }
     }
@@ -35,6 +39,7 @@ impl ResponseError for Error {
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
         }
     }
 
