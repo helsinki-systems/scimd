@@ -24,5 +24,4 @@ nativeBuildInputs = [
 buildInputs = [
     ["openssl"],
 ]
-
 ```
