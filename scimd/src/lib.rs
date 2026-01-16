@@ -13,7 +13,26 @@ mod opts;
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
 pub use error::{Error, Result};
-pub use opts::parse_args;
+pub use opts::{load_config, parse_args};
+
+pub fn init_logging() -> anyhow::Result<()> {
+    tracing_log::LogTracer::init()?;
+    let (log_env_filter, _) = tracing_subscriber::reload::Layer::new(
+        tracing_subscriber::filter::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::filter::EnvFilter::new("info")),
+    );
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_span_events(
+            tracing_subscriber::fmt::format::FmtSpan::NEW
+                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+        )
+        .compact();
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(log_env_filter)
+        .with(fmt_layer);
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(())
+}
 
 #[async_trait]
 pub trait Service {
@@ -252,22 +271,6 @@ fn accept_scim_json(ctx: &actix_web::guard::GuardContext) -> bool {
 
 impl App {
     pub async fn run(&self) -> anyhow::Result<()> {
-        tracing_log::LogTracer::init()?;
-        let (log_env_filter, _) = tracing_subscriber::reload::Layer::new(
-            tracing_subscriber::filter::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::filter::EnvFilter::new("info")),
-        );
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_span_events(
-                tracing_subscriber::fmt::format::FmtSpan::NEW
-                    | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
-            )
-            .compact();
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(log_env_filter)
-            .with(fmt_layer);
-        tracing::subscriber::set_global_default(subscriber)?;
-
         let state = State {
             service: self.service.clone(),
             bearer_token: self.bearer_token.clone(),
