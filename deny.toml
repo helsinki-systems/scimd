@@ -20,7 +20,6 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",              # https://tldrlegal.com/license/-isc-license
   "MIT",              # https://tldrlegal.com/license/mit-license
-  "OpenSSL",
   "Unicode-3.0",      # https://spdx.org/licenses/Unicode-3.0.html
   "Unlicense",        # https://tldrlegal.com/license/unlicense
   "Zlib",             # https://www.tldrlegal.com/license/zlib-libpng-license-zlib
