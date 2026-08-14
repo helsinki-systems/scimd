@@ -23,4 +23,9 @@ impl Error {
         self.detail = detail;
         self
     }
+
+    pub fn with_scim_type(mut self, scim_type: Option<&str>) -> Self {
+        self.scim_type = scim_type.map(str::to_string);
+        self
+    }
 }

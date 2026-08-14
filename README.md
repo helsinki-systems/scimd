@@ -40,6 +40,29 @@ scimd advertises it under `schemaExtensions` in `/ResourceTypes`, serves its def
 `/Schemas`, and adds the URN to a response's `schemas` array whenever the extension is actually
 populated - so a service cannot forget to declare data it returned.
 
+### Search and bulk
+
+`POST {endpoint}/.search` takes the same query a `GET` list takes, but in the body, for filters too
+long or too sensitive for a URL. `POST /v2/.search` at the root asks every registered resource type
+at once and concatenates the answers; a resource type whose service does not implement `list` just
+contributes nothing. Paging a root search is approximate, since `startIndex` and `count` reach each
+backend individually - page a single resource type's `.search` when it has to be exact.
+
+`POST /v2/Bulk` applies a batch of create/replace/patch/delete operations, dispatching each one to
+the same service method the individual routes use. It is off by default:
+
+```rust
+.with_bulk(true, Some(50), Some(1024 * 1024))  // supported, maxOperations, maxPayloadSize
+```
+
+A failing operation is reported with its own status and error document and does not abort the
+batch, unless the request sets `failOnErrors`. A `POST` may carry a `bulkId`, which later
+operations in the same batch reference as `bulkId:<value>` in a path or anywhere in their data;
+resolution is sequential, so the operation defining a `bulkId` must come before the ones using it.
+
+`startIndex`/`count` on a list request are passed to the service untouched - scimd never slices a
+result set itself. A service that pages should answer with `ListResponse::paginated`.
+
 ## Directory structure
 
 ```

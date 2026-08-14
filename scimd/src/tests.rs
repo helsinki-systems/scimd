@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use actix_web::http::{Method, StatusCode, header};
 use actix_web::test as actix_test;
@@ -65,6 +65,7 @@ impl Resource for Thing {
 #[derive(Default)]
 struct ThingStore {
     things: Mutex<BTreeMap<Uuid, Thing>>,
+    seen: Arc<Mutex<Option<FilterQuery>>>,
 }
 
 impl ThingStore {
@@ -75,15 +76,27 @@ impl ThingStore {
 
 #[crate::async_trait]
 impl ResourceService<Thing> for ThingStore {
-    async fn list(&self, _filter: FilterQuery) -> Result<ListResponse<Thing>> {
-        Ok(ListResponse::new(self.things().values().cloned().collect()))
+    async fn list(&self, filter: FilterQuery) -> Result<ListResponse<Thing>> {
+        let things: Vec<Thing> = self.things().values().cloned().collect();
+        let total = things.len();
+        let paginate = filter.start_index.is_some() || filter.count.is_some();
+        let start_index = filter.start_index.unwrap_or(1);
+        *self.seen.lock().expect("store is not poisoned") = Some(filter);
+
+        if paginate {
+            let page = things
+                .into_iter()
+                .skip(start_index.saturating_sub(1))
+                .collect();
+            Ok(ListResponse::paginated(page, total, start_index))
+        } else {
+            Ok(ListResponse::new(things))
+        }
     }
 
     async fn create(&self, mut thing: Thing) -> Result<Thing> {
         let id = thing.id.unwrap_or_else(Uuid::new_v4);
         thing.id = Some(id);
-        // Deliberately sets only `created`, to prove `finalize` fills the rest without clobbering
-        // what the service supplied.
         thing.meta = Some(Meta {
             created: Some("2026-01-01T00:00:00Z".into()),
             ..Default::default()
@@ -730,4 +743,360 @@ async fn response_keys_keep_declaration_order() {
         positions.is_sorted(),
         "keys are not in declaration order: {body}"
     );
+}
+
+fn search_body(filter: Option<&str>) -> crate::models::SearchRequest {
+    crate::models::SearchRequest {
+        filter: filter.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+macro_rules! seed {
+    ($app:expr, $name:expr) => {{
+        let created: serde_json::Value = actix_test::call_and_read_body_json(
+            &$app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new($name))
+                .to_request(),
+        )
+        .await;
+        created["id"]
+            .as_str()
+            .expect("created thing has an id")
+            .to_owned()
+    }};
+}
+
+#[actix_web::test]
+async fn create_answers_201_with_a_location() {
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+
+    let resp = actix_test::call_service(
+        &app,
+        request(Method::POST, "/v2/Things")
+            .set_json(Thing::new("first"))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .expect("a created resource says where it lives")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        location.starts_with("/v2/Things/"),
+        "unexpected Location: {location}"
+    );
+}
+
+#[actix_web::test]
+async fn search_reaches_the_same_list_as_get() {
+    let store = ThingStore::default();
+    let seen = store.seen.clone();
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let _ = seed!(app, "first");
+
+    let searched: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Things/.search")
+            .set_json(search_body(Some("displayName eq \"first\"")))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(searched["totalResults"], 1);
+    assert_eq!(searched["Resources"][0]["displayName"], "first");
+    assert_eq!(
+        seen.lock().unwrap().as_ref().unwrap().filter.as_deref(),
+        Some("displayName eq \"first\""),
+        "the filter from the body must reach the service"
+    );
+}
+
+#[actix_web::test]
+async fn search_route_is_not_swallowed_by_the_id_route() {
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+
+    let resp = actix_test::call_service(
+        &app,
+        request(Method::POST, "/v2/Things/.search")
+            .set_json(search_body(None))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body: serde_json::Value = actix_test::read_body_json(resp).await;
+    assert_eq!(
+        body["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:ListResponse",
+        "a search must answer with a list, not with a resource named '.search'"
+    );
+}
+
+#[actix_web::test]
+async fn root_search_fans_out_across_resource_types() {
+    let app = test_app!(
+        AppBuilder::new()
+            .register::<Thing, _>(ThingStore::default())
+            .register::<User, _>(SilentUserService {})
+    );
+    let _ = seed!(app, "first");
+    let _ = seed!(app, "second");
+
+    let searched: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/.search")
+            .set_json(search_body(None))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(searched["totalResults"], 2);
+    assert_eq!(searched["Resources"].as_array().unwrap().len(), 2);
+}
+
+#[actix_web::test]
+async fn pagination_passes_through_in_both_directions() {
+    let store = ThingStore::default();
+    let seen = store.seen.clone();
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let _ = seed!(app, "first");
+    let _ = seed!(app, "second");
+    let _ = seed!(app, "third");
+
+    let listed: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(
+            Method::GET,
+            "/v2/Things?startIndex=2&count=5&excludedAttributes=meta",
+        )
+        .to_request(),
+    )
+    .await;
+
+    let query = seen.lock().unwrap();
+    let query = query.as_ref().unwrap();
+    assert_eq!(query.start_index, Some(2));
+    assert_eq!(query.count, Some(5));
+    assert_eq!(query.excluded_attributes.as_deref(), Some("meta"));
+
+    assert_eq!(listed["totalResults"], 3, "how many matched overall");
+    assert_eq!(listed["startIndex"], 2);
+    assert_eq!(listed["itemsPerPage"], 2, "how many this page carries");
+}
+
+fn bulk_app_builder() -> AppBuilder {
+    AppBuilder::new()
+        .register::<Thing, _>(ThingStore::default())
+        .with_bulk(true, Some(10), None)
+}
+
+fn bulk_request(operations: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+        "Operations": operations,
+    })
+}
+
+#[actix_web::test]
+async fn bulk_is_501_until_enabled() {
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+
+    let resp = actix_test::call_service(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(bulk_request(serde_json::json!([])))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[actix_web::test]
+async fn bulk_applies_a_mixed_batch() {
+    let app = test_app!(bulk_app_builder());
+    let id = seed!(app, "to-be-changed");
+    let doomed = seed!(app, "to-be-deleted");
+
+    let body: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(bulk_request(serde_json::json!([
+                {"method": "POST", "path": "/Things", "bulkId": "fresh",
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "created"}},
+                {"method": "PUT", "path": format!("/Things/{id}"),
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "replaced"}},
+                {"method": "PATCH", "path": format!("/Things/{id}"),
+                 "data": {"schemas": [], "Operations": [
+                     {"op": "replace", "path": "displayName", "value": "patched"}]}},
+                {"method": "DELETE", "path": format!("/Things/{doomed}")},
+            ])))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        body["schemas"][0],
+        "urn:ietf:params:scim:api:messages:2.0:BulkResponse"
+    );
+    let ops = body["Operations"].as_array().unwrap();
+    assert_eq!(ops.len(), 4);
+    assert_eq!(ops[0]["status"], "201");
+    assert_eq!(ops[0]["bulkId"], "fresh");
+    assert!(
+        ops[0]["location"]
+            .as_str()
+            .unwrap()
+            .starts_with("/v2/Things/"),
+        "a created resource reports where it landed"
+    );
+    assert_eq!(ops[1]["status"], "200");
+    assert_eq!(ops[2]["status"], "200");
+    assert_eq!(ops[3]["status"], "204");
+    assert!(ops.iter().all(|o| o.get("response").is_none()));
+
+    let listed: serde_json::Value =
+        actix_test::call_and_read_body_json(&app, request(Method::GET, "/v2/Things").to_request())
+            .await;
+    let names: Vec<&str> = listed["Resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["displayName"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"created"));
+    assert!(names.contains(&"patched"));
+    assert!(!names.contains(&"to-be-deleted"));
+}
+
+#[actix_web::test]
+async fn bulk_resolves_bulk_id_references() {
+    let app = test_app!(bulk_app_builder());
+
+    let body: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(bulk_request(serde_json::json!([
+                {"method": "POST", "path": "/Things", "bulkId": "qwerty",
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "first"}},
+                {"method": "PUT", "path": "/Things/bulkId:qwerty",
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "renamed"}},
+            ])))
+            .to_request(),
+    )
+    .await;
+
+    let ops = body["Operations"].as_array().unwrap();
+    assert_eq!(ops[0]["status"], "201");
+    assert_eq!(
+        ops[1]["status"], "200",
+        "the PUT resolved bulkId:qwerty to the id the POST produced: {:?}",
+        ops[1]
+    );
+    assert_eq!(ops[0]["location"], ops[1]["location"]);
+}
+
+#[actix_web::test]
+async fn bulk_failures_are_reported_per_operation() {
+    let app = test_app!(bulk_app_builder());
+
+    let body: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(bulk_request(serde_json::json!([
+                {"method": "PUT", "path": "/Things/bulkId:never-defined",
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "x"}},
+                {"method": "POST", "path": "/Widgets",
+                 "data": {"schemas": [], "displayName": "x"}},
+                {"method": "GET", "path": "/Things"},
+                {"method": "POST", "path": "/Things",
+                 "data": {"schemas": [Thing::SCHEMA], "displayName": "survivor"}},
+            ])))
+            .to_request(),
+    )
+    .await;
+
+    let ops = body["Operations"].as_array().unwrap();
+    assert_eq!(ops.len(), 4, "one failure must not abort the batch");
+
+    assert_eq!(ops[0]["status"], "400");
+    assert_eq!(ops[0]["response"]["scimType"], "invalidValue");
+    assert_eq!(ops[1]["status"], "404", "unregistered endpoint");
+    assert_eq!(ops[2]["status"], "400", "GET is not a bulk method");
+    assert_eq!(ops[3]["status"], "201", "the batch carried on");
+}
+
+#[actix_web::test]
+async fn bulk_fail_on_errors_stops_early() {
+    let app = test_app!(bulk_app_builder());
+
+    let body: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(serde_json::json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+                "failOnErrors": 1,
+                "Operations": [
+                    {"method": "POST", "path": "/Widgets", "data": {"schemas": []}},
+                    {"method": "POST", "path": "/Things",
+                     "data": {"schemas": [Thing::SCHEMA], "displayName": "never-runs"}},
+                ],
+            }))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(body["Operations"].as_array().unwrap().len(), 1);
+
+    let listed: serde_json::Value =
+        actix_test::call_and_read_body_json(&app, request(Method::GET, "/v2/Things").to_request())
+            .await;
+    assert_eq!(listed["totalResults"], 0, "the second operation never ran");
+}
+
+#[actix_web::test]
+async fn bulk_beyond_max_operations_is_413() {
+    let app = test_app!(
+        AppBuilder::new()
+            .register::<Thing, _>(ThingStore::default())
+            .with_bulk(true, Some(1), None)
+    );
+
+    let resp = actix_test::call_service(
+        &app,
+        request(Method::POST, "/v2/Bulk")
+            .set_json(bulk_request(serde_json::json!([
+                {"method": "DELETE", "path": "/Things/a"},
+                {"method": "DELETE", "path": "/Things/b"},
+            ])))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body: serde_json::Value = actix_test::read_body_json(resp).await;
+    assert_eq!(body["scimType"], "tooLarge");
+}
+
+#[actix_web::test]
+async fn bulk_is_advertised_once_enabled() {
+    let app = test_app!(
+        AppBuilder::new()
+            .register::<Thing, _>(ThingStore::default())
+            .with_bulk(true, Some(50), Some(1_048_576))
+    );
+
+    let config: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::GET, "/v2/ServiceProviderConfig").to_request(),
+    )
+    .await;
+    assert_eq!(config["bulk"]["supported"], true);
+    assert_eq!(config["bulk"]["maxOperations"], 50);
+    assert_eq!(config["bulk"]["maxPayloadSize"], 1_048_576);
 }

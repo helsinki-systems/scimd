@@ -20,15 +20,37 @@ pub enum Error {
 
     #[error("Bad request. Details={0}")]
     BadRequest(String),
+
+    #[error("Invalid value. Details={0}")]
+    InvalidValue(String),
+
+    #[error("Payload too large. Details={0}")]
+    PayloadTooLarge(String),
 }
 
 impl Error {
-    fn get_detail(&self) -> Option<String> {
+    pub(crate) fn get_detail(&self) -> Option<String> {
         match &self {
             Self::InternalError(_) | Self::Unauthorized => None,
-            Self::BadRequest(v) => Some(v.to_owned()),
+            Self::BadRequest(v) | Self::InvalidValue(v) | Self::PayloadTooLarge(v) => {
+                Some(v.to_owned())
+            }
             _ => Some(self.to_string()),
         }
+    }
+
+    pub(crate) fn scim_type(&self) -> Option<&'static str> {
+        match &self {
+            Self::InvalidValue(_) => Some("invalidValue"),
+            Self::PayloadTooLarge(_) => Some("tooLarge"),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn to_scim_error(&self) -> crate::models::Error {
+        crate::models::Error::new(self.status_code())
+            .with_scim_type(self.scim_type())
+            .with_detail(self.get_detail())
     }
 }
 
@@ -40,15 +62,15 @@ impl ResponseError for Error {
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::InvalidValue(_) => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 
     fn error_response(&self) -> HttpResponse {
-        let status = self.status_code();
-        HttpResponse::build(status)
+        HttpResponse::build(self.status_code())
             .append_header((header::CONTENT_TYPE, "application/scim+json"))
-            .json(crate::models::Error::new(status).with_detail(self.get_detail()))
+            .json(self.to_scim_error())
     }
 }
 

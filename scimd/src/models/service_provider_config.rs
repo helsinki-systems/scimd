@@ -55,6 +55,20 @@ impl ServiceProviderConfig {
         self
     }
 
+    pub fn with_bulk(
+        mut self,
+        supported: bool,
+        max_operations: Option<u32>,
+        max_payload_size: Option<u32>,
+    ) -> Self {
+        self.bulk = BulkConfig {
+            supported,
+            max_operations,
+            max_payload_size,
+        };
+        self
+    }
+
     pub fn with_sort(mut self, supported: bool) -> Self {
         self.sort = Supported::new(supported);
         self
