@@ -1,4 +1,5 @@
-use super::meta::{Meta, Schema};
+use super::meta::Meta;
+use super::schema::Schema;
 use crate::Resource;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -34,9 +35,7 @@ impl Resource for Group {
     }
 
     fn schema() -> Schema {
-        // RFC 7643 section 8.7.2. Validated by `builtin_schemas_parse`.
-        serde_json::from_str(include_str!("schemas/group.json"))
-            .expect("the built-in Group schema is valid JSON")
+        super::schemas::group()
     }
 }
 

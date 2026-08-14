@@ -80,38 +80,21 @@ impl Resource for Device {
     }
 
     fn schema() -> Schema {
-        Schema {
-            id: Self::SCHEMA.into(),
-            name: "Device".into(),
-            description: "An example custom resource type".into(),
-            attributes: vec![
-                Attributes {
-                    name: "displayName".into(),
-                    type_: "string".into(),
-                    description: Some("Human-readable name of the device.".into()),
-                    required: Some(true),
-                    mutability: Some("readWrite".into()),
-                    returned: Some("default".into()),
-                    ..Default::default()
-                },
-                Attributes {
-                    name: "serialNumber".into(),
-                    type_: "string".into(),
-                    description: Some("Manufacturer-assigned serial number.".into()),
-                    required: Some(true),
-                    case_exact: Some(true),
-                    mutability: Some("readWrite".into()),
-                    returned: Some("default".into()),
-                    uniqueness: Some("server".into()),
-                    ..Default::default()
-                },
+        Schema::new(
+            Self::SCHEMA,
+            "Device",
+            "An example custom resource type",
+            vec![
+                Attributes::new("displayName", "string")
+                    .description("Human-readable name of the device.")
+                    .required(),
+                Attributes::new("serialNumber", "string")
+                    .description("Manufacturer-assigned serial number.")
+                    .required()
+                    .case_exact()
+                    .uniqueness("server"),
             ],
-            meta: Meta {
-                resource_type: Some("Schema".into()),
-                location: Some(format!("/v2/Schemas/{}", Self::SCHEMA)),
-                ..Default::default()
-            },
-        }
+        )
     }
 }
 

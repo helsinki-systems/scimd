@@ -1,4 +1,4 @@
-use super::{enterprise_user::EnterpriseUser, meta::Meta, meta::Schema};
+use super::{enterprise_user::EnterpriseUser, meta::Meta, schema::Schema};
 use crate::Resource;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -78,9 +78,7 @@ impl Resource for User {
     }
 
     fn schema() -> Schema {
-        // RFC 7643 section 8.7.1. Validated by `builtin_schemas_parse`.
-        serde_json::from_str(include_str!("schemas/user.json"))
-            .expect("the built-in User schema is valid JSON")
+        super::schemas::user()
     }
 }
 

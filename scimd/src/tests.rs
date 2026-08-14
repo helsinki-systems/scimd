@@ -51,21 +51,12 @@ impl Resource for Thing {
     }
 
     fn schema() -> Schema {
-        Schema {
-            id: Self::SCHEMA.into(),
-            name: "Thing".into(),
-            description: "A thing".into(),
-            attributes: vec![crate::models::Attributes {
-                name: "displayName".into(),
-                type_: "string".into(),
-                required: Some(true),
-                ..Default::default()
-            }],
-            meta: Meta {
-                resource_type: Some("Schema".into()),
-                ..Default::default()
-            },
-        }
+        Schema::new(
+            Self::SCHEMA,
+            "Thing",
+            "A thing",
+            vec![crate::models::Attributes::new("displayName", "string").required()],
+        )
     }
 }
 
@@ -449,18 +440,57 @@ struct SilentUserService {}
 impl ResourceService<User> for SilentUserService {}
 
 #[test]
-fn builtin_schemas_parse() {
-    for (schema, urn, first_attribute) in [
-        (User::schema(), User::SCHEMA, "userName"),
+fn builtin_schemas_are_well_formed() {
+    for (schema, urn, attribute_names) in [
+        (
+            User::schema(),
+            User::SCHEMA,
+            // RFC 7643 section 8.7.1, in order.
+            &[
+                "userName",
+                "name",
+                "displayName",
+                "nickName",
+                "profileUrl",
+                "title",
+                "userType",
+                "preferredLanguage",
+                "locale",
+                "timezone",
+                "active",
+                "password",
+                "emails",
+                "phoneNumbers",
+                "ims",
+                "photos",
+                "addresses",
+                "groups",
+                "entitlements",
+                "roles",
+                "x509Certificates",
+            ][..],
+        ),
         (
             crate::models::Group::schema(),
             crate::models::Group::SCHEMA,
-            "displayName",
+            &["displayName", "members"][..],
         ),
     ] {
         assert_eq!(schema.id, urn);
-        assert_eq!(schema.attributes[0].name, first_attribute);
         assert_eq!(schema.meta.resource_type.as_deref(), Some("Schema"));
+        assert_eq!(
+            schema.meta.location.as_deref(),
+            Some(format!("/v2/Schemas/{urn}").as_str())
+        );
+        assert_eq!(
+            schema
+                .attributes
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            attribute_names
+        );
+
         for attribute in &schema.attributes {
             if attribute.type_ == "complex" {
                 assert!(
@@ -469,6 +499,14 @@ fn builtin_schemas_parse() {
                         .as_ref()
                         .is_some_and(|s| !s.is_empty()),
                     "{urn}: complex attribute {} has no subAttributes",
+                    attribute.name
+                );
+            }
+            if matches!(attribute.type_.as_str(), "complex" | "boolean") {
+                assert_eq!(
+                    (attribute.case_exact, attribute.uniqueness.as_deref()),
+                    (None, None),
+                    "{urn}: {} is not string-like but carries string-only qualifiers",
                     attribute.name
                 );
             }
