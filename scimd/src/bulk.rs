@@ -11,6 +11,7 @@ use actix_web::ResponseError as _;
 use actix_web::http::StatusCode;
 use serde_json::Value;
 
+use crate::metrics::{Operation, Source};
 use crate::models::{BulkOperation, BulkOperationResult, BulkRequest, BulkResponse};
 use crate::{Error, Result, State};
 
@@ -124,9 +125,17 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
         })
     };
 
+    let resource_type = handler.resource_type();
     match (operation.method.to_ascii_uppercase().as_str(), id) {
         ("POST", None) => {
-            let created = handler.create(body()?).await?;
+            let created = state
+                .observe(
+                    resource_type,
+                    Operation::Create,
+                    Source::Bulk,
+                    handler.create(body()?),
+                )
+                .await?;
             Ok(Applied {
                 status: StatusCode::CREATED,
                 location: location_of(&created),
@@ -134,7 +143,14 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
             })
         }
         ("PUT", Some(id)) => {
-            let replaced = handler.replace(id, body()?).await?;
+            let replaced = state
+                .observe(
+                    resource_type,
+                    Operation::Replace,
+                    Source::Bulk,
+                    handler.replace(id, body()?),
+                )
+                .await?;
             Ok(Applied {
                 status: StatusCode::OK,
                 location: location_of(&replaced),
@@ -144,7 +160,15 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
         ("PATCH", Some(id)) => {
             let op = serde_json::from_value(body()?)
                 .map_err(|e| Error::BadRequest(format!("invalid PatchOp: {e}")))?;
-            match handler.patch(id, op).await? {
+            let patched = state
+                .observe(
+                    resource_type,
+                    Operation::Patch,
+                    Source::Bulk,
+                    handler.patch(id, op),
+                )
+                .await?;
+            match patched {
                 Some(patched) => Ok(Applied {
                     status: StatusCode::OK,
                     location: location_of(&patched),
@@ -158,7 +182,14 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
             }
         }
         ("DELETE", Some(id)) => {
-            handler.delete(id).await?;
+            state
+                .observe(
+                    resource_type,
+                    Operation::Delete,
+                    Source::Bulk,
+                    handler.delete(id),
+                )
+                .await?;
             Ok(Applied {
                 status: StatusCode::NO_CONTENT,
                 location: None,
@@ -184,6 +215,7 @@ pub(crate) async fn execute(state: &State, request: BulkRequest) -> Result<BulkR
             request.operations.len()
         )));
     }
+    state.observe_bulk_size(request.operations.len());
 
     // bulkId -> the id the POST actually got. Sequential: an operation can only reference a
     // bulkId defined by an operation before it.

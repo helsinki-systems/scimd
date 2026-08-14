@@ -156,10 +156,28 @@ impl ResourceService<Thing> for SilentService {}
 
 macro_rules! test_app {
     ($builder:expr) => {{
-        let state = $builder.build().state();
+        let state = $builder.build().state(None);
         actix_test::init_service(actix_web::App::new().configure(move |cfg| configure(cfg, state)))
             .await
     }};
+}
+
+macro_rules! full_app {
+    ($builder:expr, $metrics_enabled:expr) => {{
+        let app = $builder.with_metrics($metrics_enabled).build();
+        let metrics = app.metrics().expect("the metrics register cleanly");
+        let state = app.state($metrics_enabled.then(|| metrics.clone()));
+        let service =
+            actix_test::init_service(scim_app!(state, $metrics_enabled, metrics.middleware()))
+                .await;
+        (service, metrics)
+    }};
+}
+
+macro_rules! metrics_app {
+    ($builder:expr) => {
+        full_app!($builder, true)
+    };
 }
 
 fn request(method: Method, uri: &str) -> actix_test::TestRequest {
@@ -1142,4 +1160,288 @@ async fn bulk_is_advertised_once_enabled() {
     assert_eq!(config["bulk"]["supported"], true);
     assert_eq!(config["bulk"]["maxOperations"], 50);
     assert_eq!(config["bulk"]["maxPayloadSize"], 1_048_576);
+}
+
+mod metrics {
+    use super::{AppBuilder, Method, StatusCode, Thing, ThingStore, actix_test, header, request};
+    use crate::metrics::Metrics;
+
+    fn series<'a>(
+        gathered: &'a [prometheus::proto::MetricFamily],
+        family: &str,
+        labels: &[(&str, &str)],
+    ) -> Option<&'a prometheus::proto::Metric> {
+        gathered
+            .iter()
+            .find(|f| f.name() == family)?
+            .get_metric()
+            .iter()
+            .find(|metric| {
+                labels.iter().all(|(name, value)| {
+                    metric
+                        .get_label()
+                        .iter()
+                        .any(|label| label.name() == *name && label.value() == *value)
+                })
+            })
+    }
+
+    fn operations(
+        metrics: &Metrics,
+        resource_type: &str,
+        operation: &str,
+        source: &str,
+        outcome: &str,
+    ) -> u64 {
+        let gathered = metrics.registry().gather();
+        series(
+            &gathered,
+            "scimd_scim_operations_total",
+            &[
+                ("resource_type", resource_type),
+                ("operation", operation),
+                ("source", source),
+                ("outcome", outcome),
+            ],
+        )
+        .map_or(0, |metric| metric.get_counter().get_value() as u64)
+    }
+
+    fn http_endpoints(metrics: &Metrics) -> Vec<String> {
+        metrics
+            .registry()
+            .gather()
+            .iter()
+            .filter(|f| f.name() == "scimd_http_requests_total")
+            .flat_map(|f| f.get_metric())
+            .filter_map(|metric| {
+                metric
+                    .get_label()
+                    .iter()
+                    .find(|label| label.name() == "endpoint")
+                    .map(|label| label.value().to_owned())
+            })
+            .collect()
+    }
+
+    fn thing_app() -> AppBuilder {
+        AppBuilder::new().register::<Thing, _>(ThingStore::default())
+    }
+
+    #[actix_web::test]
+    async fn exposition_is_served_once_enabled() {
+        let (app, _metrics) = metrics_app!(thing_app());
+        actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
+
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/metrics").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = String::from_utf8(actix_test::read_body(resp).await.to_vec())
+            .expect("the exposition is text");
+        assert!(
+            body.contains("scimd_registered_resource_types 1"),
+            "the registry size is exposed: {body}"
+        );
+        assert!(
+            body.contains("scimd_http_requests_total"),
+            "the HTTP metrics are exposed too: {body}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn exposition_is_reachable_with_a_trailing_slash() {
+        let (app, _metrics) = metrics_app!(thing_app());
+
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/metrics/").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn nothing_is_served_or_recorded_until_enabled() {
+        let (app, metrics) = full_app!(thing_app(), false);
+
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/metrics").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        actix_test::call_service(
+            &app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new("unwatched"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            operations(&metrics, "Thing", "create", "http", "success"),
+            0,
+            "a disabled server records nothing"
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_scraper_needs_no_token_and_no_scim_accept() {
+        let (app, _metrics) = metrics_app!(thing_app().bearer_token(Some("secret".into())));
+
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/metrics")
+                .insert_header((header::ACCEPT, "text/plain;version=0.0.4,*/*;q=0.1"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn operations_are_counted_per_resource_type_and_outcome() {
+        let (app, metrics) = metrics_app!(thing_app());
+
+        let created: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new("counted"))
+                .to_request(),
+        )
+        .await;
+        let id = created["id"].as_str().expect("created thing has an id");
+
+        actix_test::call_service(
+            &app,
+            request(Method::GET, &format!("/v2/Things/{id}")).to_request(),
+        )
+        .await;
+        actix_test::call_service(
+            &app,
+            request(
+                Method::GET,
+                "/v2/Things/00000000-0000-0000-0000-000000000000",
+            )
+            .to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            operations(&metrics, "Thing", "create", "http", "success"),
+            1
+        );
+        assert_eq!(operations(&metrics, "Thing", "get", "http", "success"), 1);
+        assert_eq!(
+            operations(&metrics, "Thing", "get", "http", "not_found"),
+            1,
+            "a miss is counted apart from a hit"
+        );
+    }
+
+    #[actix_web::test]
+    async fn unimplemented_operations_are_counted_as_such() {
+        let (app, metrics) =
+            metrics_app!(AppBuilder::new().register::<Thing, _>(super::SilentService {}));
+
+        let resp =
+            actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+
+        assert_eq!(
+            operations(&metrics, "Thing", "list", "http", "not_implemented"),
+            1
+        );
+        assert_eq!(operations(&metrics, "Thing", "list", "http", "success"), 0);
+    }
+
+    #[actix_web::test]
+    async fn bulk_sub_operations_are_counted_apart_from_http_ones() {
+        let (app, metrics) = metrics_app!(thing_app().with_bulk(true, Some(10), None));
+
+        let resp = actix_test::call_service(
+            &app,
+            request(Method::POST, "/v2/Bulk")
+                .set_json(super::bulk_request(serde_json::json!([
+                    {"method": "POST", "path": "/Things",
+                     "data": {"schemas": [<Thing as crate::Resource>::SCHEMA], "displayName": "one"}},
+                    {"method": "POST", "path": "/Things",
+                     "data": {"schemas": [<Thing as crate::Resource>::SCHEMA], "displayName": "two"}},
+                    {"method": "DELETE", "path": "/Things/00000000-0000-0000-0000-000000000000"},
+                ])))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert_eq!(
+            operations(&metrics, "Thing", "create", "bulk", "success"),
+            2
+        );
+        assert_eq!(
+            operations(&metrics, "Thing", "delete", "bulk", "not_found"),
+            1,
+            "a failing operation inside a batch is visible"
+        );
+        assert_eq!(
+            operations(&metrics, "Thing", "create", "http", "success"),
+            0,
+            "and does not blur into the ones the routes serve"
+        );
+
+        let gathered = metrics.registry().gather();
+        let batches = series(&gathered, "scimd_bulk_operations_per_request", &[])
+            .expect("the batch size was observed")
+            .get_histogram();
+        assert_eq!(batches.get_sample_count(), 1, "one batch");
+        assert_eq!(batches.get_sample_sum(), 3.0, "carrying three operations");
+    }
+
+    #[actix_web::test]
+    async fn http_series_are_keyed_by_route_pattern_not_path() {
+        let (app, metrics) = metrics_app!(thing_app());
+
+        for id in [
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+        ] {
+            actix_test::call_service(
+                &app,
+                request(Method::GET, &format!("/v2/Things/{id}")).to_request(),
+            )
+            .await;
+        }
+
+        let endpoints = http_endpoints(&metrics);
+        assert!(
+            endpoints.contains(&"/v2/Things/{id}".to_owned()),
+            "the pattern is what is recorded: {endpoints:?}"
+        );
+        assert!(
+            !endpoints.iter().any(|e| e.contains("1111")),
+            "no series carries a concrete id: {endpoints:?}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn health_checks_are_not_counted() {
+        let (app, metrics) = metrics_app!(thing_app());
+
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/health").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(
+            !http_endpoints(&metrics).contains(&"/health".to_owned()),
+            "health checks stay out of the HTTP metrics"
+        );
+    }
 }

@@ -7,10 +7,12 @@ publish = false
 
 [dependencies]
 actix-web = { workspace = true, default-features = false, features = [ "macros"] }
+actix-web-prom = { workspace = true, default-features = false }
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
+prometheus = { workspace = true, default-features = false }
 sd-notify.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }

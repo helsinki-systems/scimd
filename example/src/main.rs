@@ -191,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
         .register::<scimd::models::User, _>(UserService {})
         .register::<Device, _>(DeviceService::default())
         .with_bulk(true, Some(50), Some(1024 * 1024))
+        .with_metrics(true)
         .args(args)
         .bearer_token(dotenvy::var("EXAMPLE_SERVICE_BEARER_TOKEN").ok())
         .build();

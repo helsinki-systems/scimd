@@ -2,25 +2,26 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use actix_web::{HttpServer, http, web};
-use tracing_actix_web::TracingLogger;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 mod bulk;
 mod error;
+pub(crate) mod metrics;
 pub mod middleware;
 pub mod models;
 mod opts;
 mod resource;
 
-#[cfg(test)]
-mod tests;
-
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
 pub use error::{Error, Result};
 pub use opts::{load_config, parse_args};
+/// Re-exported so a consumer can hand scimd a registry it already owns without taking a
+/// `prometheus` dependency of its own.
+pub use prometheus::Registry as MetricsRegistry;
 pub use resource::{Resource, ResourceService};
 
+use metrics::{Metrics, Operation, Source};
 use resource::ErasedHandler;
 
 pub(crate) const SCIM_BASE_PATH: &str = "/v2";
@@ -59,6 +60,13 @@ pub struct App {
     filter_config: FilterConfig,
     bulk_config: BulkConfig,
     enable_sort: bool,
+    metrics_config: MetricsConfig,
+}
+
+#[derive(Default)]
+struct MetricsConfig {
+    enabled: bool,
+    registry: Option<MetricsRegistry>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -102,6 +110,7 @@ pub struct State {
     filter_settings: FilterConfig,
     bulk_settings: BulkConfig,
     enable_sort: bool,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl State {
@@ -113,6 +122,32 @@ impl State {
                 "no handler registered for endpoint {endpoint}"
             ))
         })
+    }
+
+    /// Times a single resource operation and records how it went. Both the routes and the `/Bulk`
+    /// executor go through here, which is the whole reason the SCIM layer is instrumented
+    /// separately from the HTTP one.
+    pub(crate) async fn observe<T>(
+        &self,
+        resource_type: &str,
+        operation: Operation,
+        source: Source,
+        call: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        metrics::observe(
+            self.metrics.as_deref(),
+            resource_type,
+            operation,
+            source,
+            call,
+        )
+        .await
+    }
+
+    pub(crate) fn observe_bulk_size(&self, operations: usize) {
+        if let Some(metrics) = &self.metrics {
+            metrics.observe_bulk_size(operations);
+        }
     }
 }
 
@@ -142,7 +177,17 @@ async fn list(
     endpoint: &'static str,
     query: web::Query<models::FilterQuery>,
 ) -> Result<HttpResponse> {
-    construct_response(state.handler(endpoint)?.list(query.into_inner()).await?)
+    let handler = state.handler(endpoint)?;
+    construct_response(
+        state
+            .observe(
+                handler.resource_type(),
+                Operation::List,
+                Source::Http,
+                handler.list(query.into_inner()),
+            )
+            .await?,
+    )
 }
 
 async fn create(
@@ -150,7 +195,17 @@ async fn create(
     endpoint: &'static str,
     body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse> {
-    created_response(state.handler(endpoint)?.create(body.into_inner()).await?)
+    let handler = state.handler(endpoint)?;
+    created_response(
+        state
+            .observe(
+                handler.resource_type(),
+                Operation::Create,
+                Source::Http,
+                handler.create(body.into_inner()),
+            )
+            .await?,
+    )
 }
 
 async fn search(
@@ -158,10 +213,15 @@ async fn search(
     endpoint: &'static str,
     request: web::Json<models::SearchRequest>,
 ) -> Result<HttpResponse> {
+    let handler = state.handler(endpoint)?;
     construct_response(
         state
-            .handler(endpoint)?
-            .list(request.into_inner().into())
+            .observe(
+                handler.resource_type(),
+                Operation::Search,
+                Source::Http,
+                handler.list(request.into_inner().into()),
+            )
             .await?,
     )
 }
@@ -181,9 +241,17 @@ async fn search_all(
     let mut total = 0;
     let mut resources = vec![];
     for handler in state.handlers.values() {
+        let answer = state
+            .observe(
+                handler.resource_type(),
+                Operation::Search,
+                Source::Http,
+                handler.list(clone_query(&query)),
+            )
+            .await;
         // A resource type that does not support listing is simply not part of the answer; one
         // unimplemented `list` must not take the whole root search down with it.
-        let mut list = match handler.list(clone_query(&query)).await {
+        let mut list = match answer {
             Ok(list) => list,
             Err(Error::MethodNotImplemented) => continue,
             Err(e) => return Err(e),
@@ -241,7 +309,17 @@ async fn get(
     endpoint: &'static str,
     id: web::Path<String>,
 ) -> Result<HttpResponse> {
-    construct_response(state.handler(endpoint)?.get(&id).await?)
+    let handler = state.handler(endpoint)?;
+    construct_response(
+        state
+            .observe(
+                handler.resource_type(),
+                Operation::Get,
+                Source::Http,
+                handler.get(&id),
+            )
+            .await?,
+    )
 }
 
 async fn replace(
@@ -250,10 +328,15 @@ async fn replace(
     id: web::Path<String>,
     body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse> {
+    let handler = state.handler(endpoint)?;
     construct_response(
         state
-            .handler(endpoint)?
-            .replace(&id, body.into_inner())
+            .observe(
+                handler.resource_type(),
+                Operation::Replace,
+                Source::Http,
+                handler.replace(&id, body.into_inner()),
+            )
             .await?,
     )
 }
@@ -264,7 +347,16 @@ async fn patch(
     id: web::Path<String>,
     op: web::Json<models::PatchOp>,
 ) -> Result<HttpResponse> {
-    match state.handler(endpoint)?.patch(&id, op.into_inner()).await? {
+    let handler = state.handler(endpoint)?;
+    let patched = state
+        .observe(
+            handler.resource_type(),
+            Operation::Patch,
+            Source::Http,
+            handler.patch(&id, op.into_inner()),
+        )
+        .await?;
+    match patched {
         Some(v) => construct_response(v),
         None => Ok(HttpResponse::NoContent().finish()),
     }
@@ -275,7 +367,15 @@ async fn delete(
     endpoint: &'static str,
     id: web::Path<String>,
 ) -> Result<HttpResponse> {
-    state.handler(endpoint)?.delete(&id).await?;
+    let handler = state.handler(endpoint)?;
+    state
+        .observe(
+            handler.resource_type(),
+            Operation::Delete,
+            Source::Http,
+            handler.delete(&id),
+        )
+        .await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -373,6 +473,26 @@ fn bulk_payload_config(state: &State) -> web::PayloadConfig {
     }
 }
 
+/// The whole HTTP stack, shared by [`App::run`] and the tests so that what is exercised is what is
+/// served.
+macro_rules! scim_app {
+    ($state:expr, $metrics_enabled:expr, $prometheus:expr) => {
+        actix_web::App::new()
+            .wrap(actix_web::middleware::NormalizePath::trim())
+            .wrap(actix_web::middleware::Condition::new(
+                $metrics_enabled,
+                $prometheus,
+            ))
+            .wrap(tracing_actix_web::TracingLogger::default())
+            .configure({
+                let state = $state;
+                move |cfg| crate::configure(cfg, state)
+            })
+            .route("/health", actix_web::web::get().to(crate::health_check))
+            .default_service(actix_web::web::to(crate::not_found))
+    };
+}
+
 /// Builds the SCIM scope. Shared by [`App::run`] and the tests, so both exercise the same routing.
 ///
 /// One actix resource is registered per endpoint rather than a single `/{resourceType}` catch-all;
@@ -450,7 +570,13 @@ fn configure(cfg: &mut web::ServiceConfig, state: State) {
 }
 
 impl App {
-    fn state(&self) -> State {
+    fn metrics(&self) -> anyhow::Result<Arc<Metrics>> {
+        let metrics = Metrics::new(self.metrics_config.registry.clone())?;
+        metrics.set_resource_types(self.handlers.len());
+        Ok(Arc::new(metrics))
+    }
+
+    fn state(&self, metrics: Option<Arc<Metrics>>) -> State {
         State {
             handlers: self.handlers.clone(),
             bearer_token: self.bearer_token.clone(),
@@ -458,28 +584,30 @@ impl App {
             filter_settings: self.filter_config,
             bulk_settings: self.bulk_config,
             enable_sort: self.enable_sort,
+            metrics,
         }
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        let state = self.state();
+        let enabled = self.metrics_config.enabled;
+        let metrics = self.metrics()?;
+
+        let state = self.state(enabled.then(|| metrics.clone()));
+        let prometheus = metrics.middleware();
+
         if self.bearer_token.is_none() {
             tracing::warn!("scimd runs without authorization. Please pass in a token!");
         }
         if self.handlers.is_empty() {
             tracing::warn!("scimd runs without any registered resource. Did you call register()?");
         }
+        if enabled {
+            tracing::info!("Serving Prometheus metrics from {}", metrics::ENDPOINT);
+        }
 
-        let mut server = HttpServer::new(move || {
-            let state = state.clone();
-            actix_web::App::new()
-                .wrap(actix_web::middleware::NormalizePath::trim())
-                .wrap(TracingLogger::default())
-                .configure(move |cfg| configure(cfg, state))
-                .route("/health", web::get().to(health_check))
-                .default_service(web::to(not_found))
-        })
-        .workers(self.workers);
+        let mut server =
+            HttpServer::new(move || scim_app!(state.clone(), enabled, prometheus.clone()))
+                .workers(self.workers);
 
         for bind in &self.bind {
             tracing::info!("Listening on TCP socket bound to {}", bind);
@@ -531,6 +659,7 @@ pub struct AppBuilder {
     filter_settings: FilterConfig,
     bulk_settings: BulkConfig,
     enable_sort: bool,
+    metrics_settings: MetricsConfig,
 }
 
 impl Default for AppBuilder {
@@ -551,6 +680,7 @@ impl AppBuilder {
             filter_settings: FilterConfig::default(),
             bulk_settings: BulkConfig::default(),
             enable_sort: false,
+            metrics_settings: MetricsConfig::default(),
         }
     }
 
@@ -625,6 +755,25 @@ impl AppBuilder {
         self
     }
 
+    /// Enables `GET /metrics`. Until this is called nothing is recorded and the path 404s.
+    ///
+    /// The endpoint is served outside the SCIM scope, so it answers a Prometheus scraper without a
+    /// bearer token
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.metrics_settings.enabled = enabled;
+        self
+    }
+
+    /// Records into a registry the consumer owns, so that a service's own metrics and scimd's are
+    /// served from the same endpoint. Implies [`Self::with_metrics`].
+    pub fn metrics_registry(mut self, registry: MetricsRegistry) -> Self {
+        self.metrics_settings = MetricsConfig {
+            enabled: true,
+            registry: Some(registry),
+        };
+        self
+    }
+
     pub fn build(self) -> App {
         App {
             handlers: Arc::new(self.handlers),
@@ -641,6 +790,10 @@ impl AppBuilder {
             filter_config: self.filter_settings,
             bulk_config: self.bulk_settings,
             enable_sort: self.enable_sort,
+            metrics_config: self.metrics_settings,
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

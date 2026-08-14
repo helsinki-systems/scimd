@@ -43,6 +43,21 @@ impl Error {
         }
     }
 
+    /// The variant's name as a metrics label.
+    pub(crate) fn kind(&self) -> &'static str {
+        match &self {
+            Self::InternalError(_) => "internal_error",
+            Self::MethodNotImplemented => "not_implemented",
+            Self::Conflict => "conflict",
+            Self::Unauthorized => "unauthorized",
+            Self::NotFound(_) => "not_found",
+            Self::BadRequest(_) => "bad_request",
+            Self::InvalidValue(_) => "invalid_value",
+            Self::PayloadTooLarge(_) => "too_large",
+            Self::NotAcceptable(_) => "not_acceptable",
+        }
+    }
+
     pub(crate) fn scim_type(&self) -> Option<&'static str> {
         match &self {
             Self::InvalidValue(_) => Some("invalidValue"),

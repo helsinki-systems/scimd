@@ -63,6 +63,46 @@ resolution is sequential, so the operation defining a `bulkId` must come before 
 `startIndex`/`count` on a list request are passed to the service untouched - scimd never slices a
 result set itself. A service that pages should answer with `ListResponse::paginated`.
 
+### Metrics
+
+`GET /metrics` serves Prometheus text exposition. It is off by default:
+
+```rust
+.with_metrics(true)
+```
+
+The endpoint sits outside the SCIM scope, next to `/health`, so a scraper reaches it without a
+bearer token and without asking for `application/scim+json` - **keeping it off a public interface
+is the operator's job**. Pass your own registry instead, and a service's own metrics are served
+from the same endpoint:
+
+```rust
+let registry = prometheus::Registry::new();  // scimd::MetricsRegistry
+.metrics_registry(registry.clone())          // implies with_metrics(true)
+```
+
+| Metric | Labels |
+|---|---|
+| `scimd_http_requests_total` | `endpoint`, `method`, `status` |
+| `scimd_http_requests_duration_seconds` | `endpoint`, `method`, `status` |
+| `scimd_scim_operations_total` | `resource_type`, `operation`, `source`, `outcome` |
+| `scimd_scim_operation_duration_seconds` | `resource_type`, `operation` |
+| `scimd_bulk_operations_per_request` | - |
+| `scimd_registered_resource_types` | - |
+
+The HTTP metrics alone would not tell you much: `POST /Bulk` is one request that performs any
+number of operations, and a root `POST /.search` fans out across every resource type and skips the
+ones answering `501`. So each resource operation is counted separately, labelled with the resource
+type, one of `list`/`create`/`get`/`replace`/`patch`/`delete`/`search`, whether it arrived on its
+own route or inside a batch (`source`), and how it ended - `success`, or the error it raised
+(`not_found`, `not_implemented`, `conflict`, ...). A batch operation rejected before it named a
+resource type, such as one with an unparseable path, is reported in the `/Bulk` response and
+counted in the batch size, but has no resource type to be counted under.
+
+Every label draws from a closed set, so nothing a client sends can create a time series: `endpoint`
+is the matched route pattern (`/v2/Users/{id}`, never a concrete id) and paths matching no route at
+all collapse into `UNKNOWN`. `/health` is excluded.
+
 ## Directory structure
 
 ```
