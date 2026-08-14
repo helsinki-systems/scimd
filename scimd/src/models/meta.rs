@@ -1,4 +1,4 @@
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Meta {
     #[serde(rename = "resourceType", skip_serializing_if = "Option::is_none")]
     pub resource_type: Option<String>,
@@ -12,7 +12,7 @@ pub struct Meta {
     pub location: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct Schema {
     pub id: String,
     pub name: String,
@@ -21,7 +21,7 @@ pub struct Schema {
     pub meta: Meta,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct Attributes {
     pub name: String,
     #[serde(rename = "type")]
@@ -48,7 +48,7 @@ pub struct Attributes {
     pub reference_types: Option<Vec<String>>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct SubAttributes {
     pub name: String,
     #[serde(rename = "type")]

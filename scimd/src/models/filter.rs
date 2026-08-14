@@ -5,5 +5,5 @@ pub struct FilterQuery {
     pub sort_by: Option<String>,
     #[serde(rename = "sortOrder")]
     pub sort_order: Option<String>,
-    pub arrtibutes: Option<String>,
+    pub attributes: Option<String>,
 }

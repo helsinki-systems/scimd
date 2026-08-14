@@ -24,5 +24,7 @@ tracing-subscriber = { workspace = true, features = ["registry", "env-filter"] }
 tracing.workspace = true
 
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-uuid = { workspace = true, features = ["serde"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+uuid = { workspace = true, features = ["serde", "v4"] }

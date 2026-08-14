@@ -14,8 +14,9 @@ pub enum Error {
     #[error("Unauthorized")]
     Unauthorized,
 
-    #[error("Resouce {0} not found")]
-    NotFound(uuid::Uuid),
+    // RFC 7643 defines `id` as opaque and each resource type chooses its own `Resource::Id`
+    #[error("Resource {0} not found")]
+    NotFound(String),
 
     #[error("Bad request. Details={0}")]
     BadRequest(String),

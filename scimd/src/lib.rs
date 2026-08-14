@@ -1,19 +1,32 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use actix_web::{HttpServer, http, web};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::layer::SubscriberExt as _;
-use uuid::Uuid;
 
 mod error;
 pub mod middleware;
 pub mod models;
 mod opts;
+mod resource;
+
+#[cfg(test)]
+mod tests;
 
 pub use actix_web::HttpResponse;
 pub use async_trait::async_trait;
 pub use error::{Error, Result};
 pub use opts::{load_config, parse_args};
+pub use resource::{Resource, ResourceService};
+
+use resource::ErasedHandler;
+
+pub(crate) const SCIM_BASE_PATH: &str = "/v2";
+
+/// Keyed by [`Resource::ENDPOINT`], and ordered so that `/ResourceTypes` and `/Schemas` render
+/// deterministically.
+type Registry = BTreeMap<&'static str, Arc<dyn ErasedHandler>>;
 
 pub fn init_logging() -> anyhow::Result<()> {
     tracing_log::LogTracer::init()?;
@@ -34,73 +47,8 @@ pub fn init_logging() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[async_trait]
-pub trait Service {
-    async fn list_user(
-        &self,
-        _filter: models::FilterQuery,
-    ) -> Result<models::ListResponse<models::User>> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn create_user(&self, _user: models::User) -> Result<models::User> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn get_user(&self, _id: Uuid) -> Result<models::User> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn replace_user(&self, _id: Uuid, _user: models::User) -> Result<models::User> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn patch_user(
-        &self,
-        _id: Uuid,
-        _op: models::PatchOp,
-    ) -> Result<models::ValOrEmpty<models::User>> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn delete_user(&self, _id: Uuid) -> Result<()> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn list_groups(
-        &self,
-        _filter: models::FilterQuery,
-    ) -> Result<models::ListResponse<models::User>> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn create_group(&self, _group: models::Group) -> Result<models::Group> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn get_group(&self, _id: Uuid) -> Result<models::Group> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn replace_group(&self, _id: Uuid, _group: models::Group) -> Result<models::Group> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn patch_group(
-        &self,
-        _id: Uuid,
-        _op: models::PatchOp,
-    ) -> Result<models::ValOrEmpty<models::Group>> {
-        Err(Error::MethodNotImplemented)
-    }
-
-    async fn delete_group(&self, _id: Uuid) -> Result<()> {
-        Err(Error::MethodNotImplemented)
-    }
-}
-
 pub struct App {
-    service: Arc<dyn Service + Send + Sync>,
+    handlers: Arc<Registry>,
     workers: usize,
     bind: Vec<String>,
     unix_bind: Vec<String>,
@@ -111,7 +59,7 @@ pub struct App {
     enable_sort: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct FilterConfig {
     enabled: bool,
     max_results: Option<u32>,
@@ -128,12 +76,24 @@ impl FilterConfig {
 
 #[derive(Clone)]
 pub struct State {
-    service: Arc<dyn Service + Send + Sync>,
+    handlers: Arc<Registry>,
     bearer_token: Option<String>,
 
     enable_patch: bool,
     filter_settings: FilterConfig,
     enable_sort: bool,
+}
+
+impl State {
+    /// Looks up the handler a route was registered for. Routes are only ever built from the
+    /// registry, so a miss means the two went out of sync - a bug, not a bad request.
+    fn handler(&self, endpoint: &str) -> Result<Arc<dyn ErasedHandler>> {
+        self.handlers.get(endpoint).cloned().ok_or_else(|| {
+            Error::InternalError(anyhow::anyhow!(
+                "no handler registered for endpoint {endpoint}"
+            ))
+        })
+    }
 }
 
 fn construct_response(body: impl serde::Serialize) -> Result<HttpResponse> {
@@ -142,96 +102,103 @@ fn construct_response(body: impl serde::Serialize) -> Result<HttpResponse> {
         .json(body))
 }
 
-async fn list_user(
+async fn list(
     state: web::Data<State>,
+    endpoint: &'static str,
     query: web::Query<models::FilterQuery>,
 ) -> Result<HttpResponse> {
-    let user = state.service.list_user(query.into_inner()).await?;
-    construct_response(user)
+    construct_response(state.handler(endpoint)?.list(query.into_inner()).await?)
 }
 
-async fn create_user(
+async fn create(
     state: web::Data<State>,
-    user: web::Json<models::User>,
+    endpoint: &'static str,
+    body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse> {
-    let user = state.service.create_user(user.into_inner()).await?;
-    construct_response(user)
+    construct_response(state.handler(endpoint)?.create(body.into_inner()).await?)
 }
 
-async fn get_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    let user = state.service.get_user(*id).await?;
-    construct_response(user)
-}
-
-async fn replace_user(
+async fn get(
     state: web::Data<State>,
-    id: web::Path<Uuid>,
-    user: web::Json<models::User>,
+    endpoint: &'static str,
+    id: web::Path<String>,
 ) -> Result<HttpResponse> {
-    let user = state.service.replace_user(*id, user.into_inner()).await?;
-    construct_response(user)
+    construct_response(state.handler(endpoint)?.get(&id).await?)
 }
 
-async fn patch_user(
+async fn replace(
     state: web::Data<State>,
-    id: web::Path<Uuid>,
-    user: web::Json<models::PatchOp>,
+    endpoint: &'static str,
+    id: web::Path<String>,
+    body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse> {
-    match state.service.patch_user(*id, user.into_inner()).await? {
-        models::ValOrEmpty::Val(v) => construct_response(v),
-        models::ValOrEmpty::Empty => Ok(HttpResponse::NoContent().finish()),
+    construct_response(
+        state
+            .handler(endpoint)?
+            .replace(&id, body.into_inner())
+            .await?,
+    )
+}
+
+async fn patch(
+    state: web::Data<State>,
+    endpoint: &'static str,
+    id: web::Path<String>,
+    op: web::Json<models::PatchOp>,
+) -> Result<HttpResponse> {
+    match state.handler(endpoint)?.patch(&id, op.into_inner()).await? {
+        Some(v) => construct_response(v),
+        None => Ok(HttpResponse::NoContent().finish()),
     }
 }
 
-async fn delete_user(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    state.service.delete_user(*id).await?;
+async fn delete(
+    state: web::Data<State>,
+    endpoint: &'static str,
+    id: web::Path<String>,
+) -> Result<HttpResponse> {
+    state.handler(endpoint)?.delete(&id).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
-async fn list_groups(
-    state: web::Data<State>,
-    query: web::Query<models::FilterQuery>,
-) -> Result<HttpResponse> {
-    let groups = state.service.list_groups(query.into_inner()).await?;
-    construct_response(groups)
+fn resource_type_of(handler: &Arc<dyn ErasedHandler>) -> models::ResourceType {
+    models::ResourceType::new(
+        handler.resource_type(),
+        handler.endpoint(),
+        handler.schema_urn(),
+    )
 }
 
-async fn create_group(
-    state: web::Data<State>,
-    group: web::Json<models::Group>,
-) -> Result<HttpResponse> {
-    let group = state.service.create_group(group.into_inner()).await?;
-    construct_response(group)
+async fn list_resource_types(state: web::Data<State>) -> Result<HttpResponse> {
+    construct_response(models::ListResponse::new(
+        state.handlers.values().map(resource_type_of).collect(),
+    ))
 }
 
-async fn get_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    let group = state.service.get_group(*id).await?;
-    construct_response(group)
+async fn get_resource_type(state: web::Data<State>, id: web::Path<String>) -> Result<HttpResponse> {
+    let id = id.into_inner();
+    let handler = state
+        .handlers
+        .values()
+        .find(|h| h.resource_type() == id)
+        .ok_or(Error::NotFound(id))?;
+    construct_response(resource_type_of(handler))
 }
 
-async fn replace_group(
-    state: web::Data<State>,
-    id: web::Path<Uuid>,
-    group: web::Json<models::Group>,
-) -> Result<HttpResponse> {
-    let group = state.service.replace_group(*id, group.into_inner()).await?;
-    construct_response(group)
+async fn list_schemas(state: web::Data<State>) -> Result<HttpResponse> {
+    construct_response(models::ListResponse::new(
+        state.handlers.values().map(|h| h.schema()).collect(),
+    ))
 }
 
-async fn patch_group(
-    state: web::Data<State>,
-    id: web::Path<Uuid>,
-    group: web::Json<models::PatchOp>,
-) -> Result<HttpResponse> {
-    match state.service.patch_group(*id, group.into_inner()).await? {
-        models::ValOrEmpty::Val(v) => construct_response(v),
-        models::ValOrEmpty::Empty => Ok(HttpResponse::NoContent().finish()),
-    }
-}
-
-async fn delete_group(state: web::Data<State>, id: web::Path<Uuid>) -> Result<HttpResponse> {
-    state.service.delete_group(*id).await?;
-    Ok(HttpResponse::NoContent().finish())
+async fn get_schema(state: web::Data<State>, urn: web::Path<String>) -> Result<HttpResponse> {
+    let urn = urn.into_inner();
+    let handler = state
+        .handlers
+        .values()
+        .find(|h| h.schema_urn() == urn)
+        .ok_or(Error::NotFound(urn))?;
+    construct_response(handler.schema())
 }
 
 async fn service_provider(state: web::Data<State>) -> Result<HttpResponse> {
@@ -269,57 +236,95 @@ fn accept_scim_json(ctx: &actix_web::guard::GuardContext) -> bool {
         .unwrap_or(false)
 }
 
+/// Builds the SCIM scope. Shared by [`App::run`] and the tests, so both exercise the same routing.
+///
+/// One actix resource is registered per endpoint rather than a single `/{resourceType}` catch-all;
+/// that keeps actix's 404-versus-405 handling intact and stops the catch-all from swallowing the
+/// discovery endpoints.
+fn configure(cfg: &mut web::ServiceConfig, state: State) {
+    let mut scope = web::scope(SCIM_BASE_PATH)
+        .guard(actix_web::guard::fn_guard(accept_scim_json))
+        .wrap(middleware::token())
+        .service(web::resource("/ServiceProviderConfig").route(web::get().to(service_provider)))
+        .service(web::resource("/ResourceTypes").route(web::get().to(list_resource_types)))
+        .service(web::resource("/ResourceTypes/{id}").route(web::get().to(get_resource_type)))
+        .service(web::resource("/Schemas").route(web::get().to(list_schemas)))
+        .service(web::resource("/Schemas/{urn}").route(web::get().to(get_schema)));
+
+    for &endpoint in state.handlers.keys() {
+        tracing::debug!("Registering SCIM routes for {SCIM_BASE_PATH}{endpoint}");
+        scope = scope
+            .service(
+                web::resource(endpoint)
+                    .route(web::get().to(
+                        move |state: web::Data<State>, query: web::Query<models::FilterQuery>| {
+                            list(state, endpoint, query)
+                        },
+                    ))
+                    .route(web::post().to(
+                        move |state: web::Data<State>, body: web::Json<serde_json::Value>| {
+                            create(state, endpoint, body)
+                        },
+                    )),
+            )
+            .service(
+                web::resource(format!("{endpoint}/{{id}}"))
+                    .route(
+                        web::get().to(move |state: web::Data<State>, id: web::Path<String>| {
+                            get(state, endpoint, id)
+                        }),
+                    )
+                    .route(web::put().to(
+                        move |state: web::Data<State>,
+                              id: web::Path<String>,
+                              body: web::Json<serde_json::Value>| {
+                            replace(state, endpoint, id, body)
+                        },
+                    ))
+                    .route(web::patch().to(
+                        move |state: web::Data<State>,
+                              id: web::Path<String>,
+                              op: web::Json<models::PatchOp>| {
+                            patch(state, endpoint, id, op)
+                        },
+                    ))
+                    .route(web::delete().to(
+                        move |state: web::Data<State>, id: web::Path<String>| {
+                            delete(state, endpoint, id)
+                        },
+                    )),
+            );
+    }
+
+    cfg.app_data(web::Data::new(state)).service(scope);
+}
+
 impl App {
-    pub async fn run(&self) -> anyhow::Result<()> {
-        let state = State {
-            service: self.service.clone(),
+    fn state(&self) -> State {
+        State {
+            handlers: self.handlers.clone(),
             bearer_token: self.bearer_token.clone(),
             enable_patch: self.enable_patch,
             filter_settings: self.filter_config,
             enable_sort: self.enable_sort,
-        };
+        }
+    }
+
+    pub async fn run(&self) -> anyhow::Result<()> {
+        let state = self.state();
         if self.bearer_token.is_none() {
             tracing::warn!("scimd runs without authorization. Please pass in a token!");
         }
+        if self.handlers.is_empty() {
+            tracing::warn!("scimd runs without any registered resource. Did you call register()?");
+        }
 
         let mut server = HttpServer::new(move || {
+            let state = state.clone();
             actix_web::App::new()
-                .app_data(web::Data::new(state.clone()))
                 .wrap(actix_web::middleware::NormalizePath::trim())
                 .wrap(TracingLogger::default())
-                .service(
-                    web::scope("/v2")
-                        .guard(actix_web::guard::fn_guard(accept_scim_json))
-                        .wrap(middleware::token())
-                        .service(
-                            web::resource("/Users")
-                                .route(web::get().to(list_user))
-                                .route(web::post().to(create_user)),
-                        )
-                        .service(
-                            web::resource("/Users/{id}")
-                                .route(web::get().to(get_user))
-                                .route(web::put().to(replace_user))
-                                .route(web::patch().to(patch_user))
-                                .route(web::delete().to(delete_user)),
-                        )
-                        .service(
-                            web::resource("/Groups")
-                                .route(web::get().to(list_groups))
-                                .route(web::post().to(create_group)),
-                        )
-                        .service(
-                            web::resource("/Groups/{id}")
-                                .route(web::get().to(get_group))
-                                .route(web::put().to(replace_group))
-                                .route(web::patch().to(patch_group))
-                                .route(web::delete().to(delete_group)),
-                        )
-                        .service(
-                            web::resource("/ServiceProviderConfig")
-                                .route(web::get().to(service_provider)),
-                        ),
-                )
+                .configure(move |cfg| configure(cfg, state))
                 .route("/health", web::get().to(health_check))
                 .default_service(web::to(not_found))
         })
@@ -365,7 +370,7 @@ impl App {
 }
 
 pub struct AppBuilder {
-    service: Arc<dyn Service + Send + Sync>,
+    handlers: Registry,
     workers: usize,
     bind: Vec<String>,
     unix_bind: Vec<String>,
@@ -376,21 +381,42 @@ pub struct AppBuilder {
     enable_sort: bool,
 }
 
+impl Default for AppBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppBuilder {
-    pub fn new(service: Arc<dyn Service + Send + Sync>) -> Self {
+    pub fn new() -> Self {
         Self {
-            service,
+            handlers: Registry::new(),
             workers: 2,
             bind: vec![],
             unix_bind: vec![],
             bearer_token: None,
             enable_patch: false,
-            filter_settings: FilterConfig {
-                enabled: false,
-                max_results: None,
-            },
+            filter_settings: FilterConfig::default(),
             enable_sort: false,
         }
+    }
+
+    /// Registers the service backing a single SCIM resource type. `R` is normally inferred from the
+    /// turbofish - `register::<User, _>(svc)` - and everything the framework needs to route and
+    /// describe the resource comes from `R`'s [`Resource`] impl.
+    pub fn register<R, S>(mut self, service: S) -> Self
+    where
+        R: Resource,
+        S: ResourceService<R> + 'static,
+    {
+        let handler = Arc::new(resource::TypedHandler::new(service));
+        if self.handlers.insert(R::ENDPOINT, handler).is_some() {
+            tracing::warn!(
+                "endpoint {} was registered more than once - the last registration wins",
+                R::ENDPOINT
+            );
+        }
+        self
     }
 
     pub fn worker(mut self, workers: usize) -> Self {
@@ -437,7 +463,7 @@ impl AppBuilder {
 
     pub fn build(self) -> App {
         App {
-            service: self.service,
+            handlers: Arc::new(self.handlers),
             workers: self.workers,
             bind: if self.bind.is_empty() && self.unix_bind.is_empty() {
                 vec!["127.0.0.1:8080".into()]

@@ -1,4 +1,5 @@
-use super::{enterprise_user::EnterpriseUser, meta::Meta};
+use super::{enterprise_user::EnterpriseUser, meta::Meta, meta::Schema};
+use crate::Resource;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct User {
@@ -57,10 +58,36 @@ pub struct User {
     pub enterprise_user: Option<EnterpriseUser>,
 }
 
+impl Resource for User {
+    type Id = String;
+
+    const RESOURCE_TYPE: &'static str = "User";
+    const ENDPOINT: &'static str = "/Users";
+    const SCHEMA: &'static str = "urn:ietf:params:scim:schemas:core:2.0:User";
+
+    fn id(&self) -> Option<&Self::Id> {
+        self.id.as_ref()
+    }
+
+    fn meta(&self) -> Option<&Meta> {
+        self.meta.as_ref()
+    }
+
+    fn set_meta(&mut self, meta: Meta) {
+        self.meta = Some(meta);
+    }
+
+    fn schema() -> Schema {
+        // RFC 7643 section 8.7.1. Validated by `builtin_schemas_parse`.
+        serde_json::from_str(include_str!("schemas/user.json"))
+            .expect("the built-in User schema is valid JSON")
+    }
+}
+
 impl Default for User {
     fn default() -> Self {
         Self {
-            schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:User".to_string()],
+            schemas: vec![Self::SCHEMA.to_string()],
             user_name: "".to_string(),
             id: None,
             name: None,

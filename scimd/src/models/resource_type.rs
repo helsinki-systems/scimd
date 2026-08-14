@@ -1,0 +1,51 @@
+use super::meta::Meta;
+
+/// A `ResourceType` as served from `/ResourceTypes` (RFC 7643 section 6).
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct ResourceType {
+    // urn:ietf:params:scim:schemas:core:2.0:ResourceType
+    pub schemas: Vec<String>,
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub endpoint: String,
+    pub schema: String,
+    #[serde(rename = "schemaExtensions", skip_serializing_if = "Vec::is_empty")]
+    pub schema_extensions: Vec<SchemaExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Meta>,
+}
+
+impl ResourceType {
+    pub fn new(resource_type: &str, endpoint: &str, schema: &str) -> Self {
+        Self {
+            schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:ResourceType".into()],
+            id: resource_type.into(),
+            name: resource_type.into(),
+            description: None,
+            endpoint: endpoint.into(),
+            schema: schema.into(),
+            schema_extensions: vec![],
+            meta: Some(Meta {
+                resource_type: Some("ResourceType".into()),
+                location: Some(format!(
+                    "{}/ResourceTypes/{resource_type}",
+                    crate::SCIM_BASE_PATH
+                )),
+                ..Default::default()
+            }),
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct SchemaExtension {
+    pub schema: String,
+    pub required: bool,
+}

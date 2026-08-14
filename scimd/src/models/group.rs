@@ -1,9 +1,11 @@
-use super::meta::Meta;
+use super::meta::{Meta, Schema};
+use crate::Resource;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Group {
     pub schemas: Vec<String>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -12,12 +14,38 @@ pub struct Group {
     pub meta: Option<Meta>,
 }
 
+impl Resource for Group {
+    type Id = String;
+
+    const RESOURCE_TYPE: &'static str = "Group";
+    const ENDPOINT: &'static str = "/Groups";
+    const SCHEMA: &'static str = "urn:ietf:params:scim:schemas:core:2.0:Group";
+
+    fn id(&self) -> Option<&Self::Id> {
+        self.id.as_ref()
+    }
+
+    fn meta(&self) -> Option<&Meta> {
+        self.meta.as_ref()
+    }
+
+    fn set_meta(&mut self, meta: Meta) {
+        self.meta = Some(meta);
+    }
+
+    fn schema() -> Schema {
+        // RFC 7643 section 8.7.2. Validated by `builtin_schemas_parse`.
+        serde_json::from_str(include_str!("schemas/group.json"))
+            .expect("the built-in Group schema is valid JSON")
+    }
+}
+
 impl Default for Group {
     fn default() -> Self {
         Group {
-            schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:Group".to_string()],
-            id: "default_id".to_string(),
-            display_name: "default_display_name".to_string(),
+            schemas: vec![Self::SCHEMA.to_string()],
+            id: None,
+            display_name: String::new(),
             members: None,
             meta: None,
         }
