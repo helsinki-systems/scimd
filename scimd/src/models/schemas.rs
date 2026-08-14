@@ -272,6 +272,49 @@ pub(super) fn user() -> Schema {
     )
 }
 
+pub(super) fn enterprise_user() -> Schema {
+    Schema::new(
+        super::enterprise_user::SCHEMA,
+        "EnterpriseUser",
+        "Enterprise User",
+        vec![
+            Attributes::new("employeeNumber", "string").description(
+                "Numeric or alphanumeric identifier assigned to a person, typically based on \
+                 order of hire or association with an organization.",
+            ),
+            Attributes::new("costCenter", "string")
+                .description("Identifies the name of a cost center."),
+            Attributes::new("organization", "string")
+                .description("Identifies the name of an organization."),
+            Attributes::new("division", "string").description("Identifies the name of a division."),
+            Attributes::new("department", "string")
+                .description("Identifies the name of a department."),
+            Attributes::new("manager", "complex")
+                .description(
+                    "The User's manager. A complex type that optionally allows service providers \
+                     to represent organizational hierarchy by referencing the 'id' attribute of \
+                     another User.",
+                )
+                .sub_attributes(vec![
+                    SubAttributes::new("value", "string").description(
+                        "The id of the SCIM resource representing the User's manager. REQUIRED.",
+                    ),
+                    SubAttributes::new("$ref", "reference")
+                        .description(
+                            "The URI of the SCIM resource representing the User's manager. \
+                             REQUIRED.",
+                        )
+                        .reference_types(&["User"]),
+                    SubAttributes::new("displayName", "string")
+                        .description(
+                            "The displayName of the User's manager. OPTIONAL and READ-ONLY.",
+                        )
+                        .mutability("readOnly"),
+                ]),
+        ],
+    )
+}
+
 pub(super) fn group() -> Schema {
     Schema::new(
         super::Group::SCHEMA,

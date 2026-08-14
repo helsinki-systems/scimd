@@ -42,10 +42,26 @@ impl ResourceType {
         self.description = Some(description.into());
         self
     }
+
+    pub fn with_extensions(mut self, extensions: Vec<SchemaExtension>) -> Self {
+        self.schema_extensions = extensions;
+        self
+    }
 }
 
+/// An extension as `/ResourceTypes` advertises it: the URN and whether it is mandatory. The schema
+/// itself is served from `/Schemas`; see [`super::Extension`] for the declaration side.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SchemaExtension {
     pub schema: String,
     pub required: bool,
+}
+
+impl From<super::Extension> for SchemaExtension {
+    fn from(extension: super::Extension) -> Self {
+        Self {
+            schema: extension.schema.id,
+            required: extension.required,
+        }
+    }
 }

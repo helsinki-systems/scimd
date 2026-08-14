@@ -9,7 +9,9 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use scimd::models::{Attributes, FilterQuery, ListResponse, Meta, PatchOp, Schema, ValOrEmpty};
+use scimd::models::{
+    Attributes, Extension, FilterQuery, ListResponse, Meta, PatchOp, Schema, ValOrEmpty,
+};
 use scimd::{Resource, ResourceService};
 
 struct UserService {}
@@ -55,8 +57,33 @@ struct Device {
     display_name: String,
     #[serde(rename = "serialNumber")]
     serial_number: String,
+    #[serde(rename = "urn:example:params:scim:schemas:extension:lease:Device")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lease: Option<Lease>,
     #[serde(skip_serializing_if = "Option::is_none")]
     meta: Option<Meta>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct Lease {
+    #[serde(rename = "leasedUntil", skip_serializing_if = "Option::is_none")]
+    leased_until: Option<String>,
+}
+
+impl Lease {
+    const SCHEMA: &'static str = "urn:example:params:scim:schemas:extension:lease:Device";
+
+    fn schema() -> Schema {
+        Schema::new(
+            Self::SCHEMA,
+            "DeviceLease",
+            "Leasing information for a device",
+            vec![
+                Attributes::new("leasedUntil", "dateTime")
+                    .description("When the lease on this device expires."),
+            ],
+        )
+    }
 }
 
 impl Resource for Device {
@@ -95,6 +122,10 @@ impl Resource for Device {
                     .uniqueness("server"),
             ],
         )
+    }
+
+    fn extensions() -> Vec<Extension> {
+        vec![Extension::optional(Lease::schema())]
     }
 }
 

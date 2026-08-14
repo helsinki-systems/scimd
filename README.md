@@ -24,6 +24,22 @@ Every method of `ResourceService` defaults to returning `MethodNotImplemented`, 
 the operations your product supports - the rest answer `501` on their own. `User` and `Group` ship
 with scimd as the two resource types RFC 7643 predefines; see `example/` for a custom one.
 
+### Schema extensions
+
+A resource type can carry extra attributes namespaced under their own URN - `User` ships with the
+Enterprise User extension. An extension is a field with a `serde(rename)` of the URN, plus a
+declaration:
+
+```rust
+fn extensions() -> Vec<Extension> {
+    vec![Extension::optional(Lease::schema())]
+}
+```
+
+scimd advertises it under `schemaExtensions` in `/ResourceTypes`, serves its definition from
+`/Schemas`, and adds the URN to a response's `schemas` array whenever the extension is actually
+populated - so a service cannot forget to declare data it returned.
+
 ## Directory structure
 
 ```

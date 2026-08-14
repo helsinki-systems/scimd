@@ -167,6 +167,23 @@ fn resource_type_of(handler: &Arc<dyn ErasedHandler>) -> models::ResourceType {
         handler.endpoint(),
         handler.schema_urn(),
     )
+    .with_extensions(handler.extensions().into_iter().map(Into::into).collect())
+}
+
+/// Every schema the server knows about: each resource type's own, followed by its extensions.
+/// Two resource types sharing an extension advertise it once.
+fn schemas_of(state: &State) -> Vec<models::Schema> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut schemas = vec![];
+    for handler in state.handlers.values() {
+        let extensions = handler.extensions().into_iter().map(|e| e.schema);
+        for schema in std::iter::once(handler.schema()).chain(extensions) {
+            if seen.insert(schema.id.clone()) {
+                schemas.push(schema);
+            }
+        }
+    }
+    schemas
 }
 
 async fn list_resource_types(state: web::Data<State>) -> Result<HttpResponse> {
@@ -186,19 +203,16 @@ async fn get_resource_type(state: web::Data<State>, id: web::Path<String>) -> Re
 }
 
 async fn list_schemas(state: web::Data<State>) -> Result<HttpResponse> {
-    construct_response(models::ListResponse::new(
-        state.handlers.values().map(|h| h.schema()).collect(),
-    ))
+    construct_response(models::ListResponse::new(schemas_of(&state)))
 }
 
 async fn get_schema(state: web::Data<State>, urn: web::Path<String>) -> Result<HttpResponse> {
     let urn = urn.into_inner();
-    let handler = state
-        .handlers
-        .values()
-        .find(|h| h.schema_urn() == urn)
+    let schema = schemas_of(&state)
+        .into_iter()
+        .find(|s| s.id == urn)
         .ok_or(Error::NotFound(urn))?;
-    construct_response(handler.schema())
+    construct_response(schema)
 }
 
 async fn service_provider(state: web::Data<State>) -> Result<HttpResponse> {

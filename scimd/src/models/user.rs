@@ -80,6 +80,10 @@ impl Resource for User {
     fn schema() -> Schema {
         super::schemas::user()
     }
+
+    fn extensions() -> Vec<super::Extension> {
+        vec![super::Extension::optional(super::schemas::enterprise_user())]
+    }
 }
 
 impl Default for User {

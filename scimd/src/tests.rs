@@ -5,7 +5,9 @@ use actix_web::http::{Method, StatusCode, header};
 use actix_web::test as actix_test;
 use uuid::Uuid;
 
-use crate::models::{FilterQuery, ListResponse, Meta, PatchOp, Schema, User, ValOrEmpty};
+use crate::models::{
+    FilterQuery, ListResponse, Meta, PatchOp, Schema, User, ValOrEmpty, enterprise_user,
+};
 use crate::resource::finalize;
 use crate::{AppBuilder, Error, Resource, ResourceService, Result, configure};
 
@@ -416,7 +418,16 @@ async fn discovery_is_derived_from_the_registry() {
     let schemas: serde_json::Value =
         actix_test::call_and_read_body_json(&app, request(Method::GET, "/v2/Schemas").to_request())
             .await;
-    assert_eq!(schemas["totalResults"], 2);
+    assert_eq!(schemas["totalResults"], 3);
+    assert_eq!(
+        schemas["Resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![Thing::SCHEMA, User::SCHEMA, enterprise_user::SCHEMA]
+    );
 
     let user_schema: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -438,6 +449,129 @@ struct SilentUserService {}
 
 #[crate::async_trait]
 impl ResourceService<User> for SilentUserService {}
+
+struct OneUserService {
+    user: Mutex<Option<User>>,
+}
+
+#[crate::async_trait]
+impl ResourceService<User> for OneUserService {
+    async fn get(&self, _id: String) -> Result<User> {
+        self.user
+            .lock()
+            .expect("store is not poisoned")
+            .take()
+            .ok_or_else(|| Error::NotFound("already taken".into()))
+    }
+}
+
+#[actix_web::test]
+async fn extensions_are_advertised_in_resource_types() {
+    let app = test_app!(AppBuilder::new().register::<User, _>(SilentUserService {}));
+
+    let user: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::GET, "/v2/ResourceTypes/User").to_request(),
+    )
+    .await;
+    assert_eq!(
+        user["schemaExtensions"][0]["schema"],
+        enterprise_user::SCHEMA
+    );
+    assert_eq!(user["schemaExtensions"][0]["required"], false);
+
+    let extension: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(
+            Method::GET,
+            &format!("/v2/Schemas/{}", enterprise_user::SCHEMA),
+        )
+        .to_request(),
+    )
+    .await;
+    assert_eq!(extension["id"], enterprise_user::SCHEMA);
+    assert_eq!(extension["name"], "EnterpriseUser");
+    assert_eq!(extension["attributes"][0]["name"], "employeeNumber");
+
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let thing: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::GET, "/v2/ResourceTypes/Thing").to_request(),
+    )
+    .await;
+    assert!(thing.get("schemaExtensions").is_none());
+}
+
+#[actix_web::test]
+async fn present_extension_data_is_declared_in_schemas() {
+    let carrying = User {
+        id: Some("07756fc0-0000-4000-8000-000000000000".into()),
+        enterprise_user: Some(enterprise_user::EnterpriseUser {
+            department: Some("Software".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let app = test_app!(AppBuilder::new().register::<User, _>(OneUserService {
+        user: Mutex::new(Some(carrying))
+    }));
+
+    let user: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(
+            Method::GET,
+            "/v2/Users/07756fc0-0000-4000-8000-000000000000",
+        )
+        .to_request(),
+    )
+    .await;
+    assert_eq!(
+        user["schemas"],
+        serde_json::json!([User::SCHEMA, enterprise_user::SCHEMA]),
+        "the extension is present, so its URN must be declared"
+    );
+    assert_eq!(user[enterprise_user::SCHEMA]["department"], "Software");
+}
+
+#[actix_web::test]
+async fn absent_extension_data_is_not_declared() {
+    let bare = User {
+        id: Some("07756fc0-0000-4000-8000-000000000001".into()),
+        ..Default::default()
+    };
+    let app = test_app!(AppBuilder::new().register::<User, _>(OneUserService {
+        user: Mutex::new(Some(bare))
+    }));
+
+    let user: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(
+            Method::GET,
+            "/v2/Users/07756fc0-0000-4000-8000-000000000001",
+        )
+        .to_request(),
+    )
+    .await;
+    assert_eq!(
+        user["schemas"],
+        serde_json::json!([User::SCHEMA]),
+        "an extension that is not carried must not be announced"
+    );
+}
+
+#[test]
+fn enterprise_user_is_namespaced_under_its_urn() {
+    let user = User {
+        enterprise_user: Some(enterprise_user::EnterpriseUser::default()),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&user).unwrap();
+    assert!(
+        value.get(enterprise_user::SCHEMA).is_some(),
+        "User serializes its extension under a different key than {}",
+        enterprise_user::SCHEMA
+    );
+}
 
 #[test]
 fn builtin_schemas_are_well_formed() {

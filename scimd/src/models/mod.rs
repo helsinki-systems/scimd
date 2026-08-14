@@ -18,7 +18,7 @@ pub use list::ListResponse;
 pub use meta::Meta;
 pub use patchop::PatchOp;
 pub use resource_type::{ResourceType, SchemaExtension};
-pub use schema::{Attributes, Schema, SubAttributes};
+pub use schema::{Attributes, Extension, Schema, SubAttributes};
 pub(crate) use service_provider_config::ServiceProviderConfig;
 pub use user::User;
 

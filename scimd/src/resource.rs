@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::models::{FilterQuery, ListResponse, Meta, PatchOp, Schema, ValOrEmpty};
+use crate::models::{Extension, FilterQuery, ListResponse, Meta, PatchOp, Schema, ValOrEmpty};
 use crate::{Error, Result, SCIM_BASE_PATH};
 
 /// Describes what makes a type a SCIM resource: its type name, endpoint, schema URN, and how to
@@ -38,6 +38,10 @@ pub trait Resource: serde::Serialize + serde::de::DeserializeOwned + Send + Sync
     fn set_meta(&mut self, meta: Meta);
 
     fn schema() -> Schema;
+
+    fn extensions() -> Vec<Extension> {
+        vec![]
+    }
 }
 
 /// The six operations a SCIM resource endpoint can expose.
@@ -80,6 +84,7 @@ pub(crate) trait ErasedHandler: Send + Sync {
     fn resource_type(&self) -> &'static str;
     fn schema_urn(&self) -> &'static str;
     fn schema(&self) -> Schema;
+    fn extensions(&self) -> Vec<Extension>;
 
     async fn list(&self, filter: FilterQuery) -> Result<Value>;
     async fn create(&self, body: Value) -> Result<Value>;
@@ -91,15 +96,27 @@ pub(crate) trait ErasedHandler: Send + Sync {
 
 pub(crate) struct TypedHandler<R, S> {
     service: S,
+    extension_urns: Vec<String>,
     _marker: PhantomData<fn() -> R>,
 }
 
-impl<R, S> TypedHandler<R, S> {
+impl<R: Resource, S> TypedHandler<R, S> {
     pub(crate) fn new(service: S) -> Self {
         Self {
             service,
+            extension_urns: R::extensions()
+                .into_iter()
+                .map(|extension| extension.schema.id)
+                .collect(),
             _marker: PhantomData,
         }
+    }
+
+    fn body(&self, resource: &mut R) -> Result<Value> {
+        finalize(resource);
+        let mut value = to_body(resource)?;
+        reconcile_schemas(&mut value, R::SCHEMA, &self.extension_urns);
+        Ok(value)
     }
 }
 
@@ -116,6 +133,41 @@ pub(crate) fn finalize<R: Resource>(resource: &mut R) {
         meta.location = Some(format!("{SCIM_BASE_PATH}{}/{id}", R::ENDPOINT));
     }
     resource.set_meta(meta);
+}
+
+/// RFC 7643 requires a resource to name in `schemas` every schema it actually carries. A service
+/// that fills in an extension but forgets to declare it produces a body real IdPs reject, so the
+/// missing URNs are added here. Additive only - a URN the service listed is never removed, and an
+/// extension whose data is absent is never announced.
+fn reconcile_schemas(value: &mut Value, core: &str, extension_urns: &[String]) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+
+    let mut carried = vec![core];
+    carried.extend(
+        extension_urns
+            .iter()
+            .filter(|urn| object.get(urn.as_str()).is_some_and(|v| !v.is_null()))
+            .map(String::as_str),
+    );
+
+    let declared = object.get("schemas").and_then(Value::as_array);
+    let missing: Vec<Value> = carried
+        .into_iter()
+        .filter(|urn| declared.is_none_or(|d| !d.iter().any(|v| v.as_str() == Some(urn))))
+        .map(Value::from)
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+
+    match object.get_mut("schemas").and_then(Value::as_array_mut) {
+        Some(schemas) => schemas.extend(missing),
+        None => {
+            object.insert("schemas".to_string(), Value::Array(missing));
+        }
+    }
 }
 
 fn parse_id<R: Resource>(id: &str) -> Result<R::Id> {
@@ -160,24 +212,32 @@ where
         R::schema()
     }
 
+    fn extensions(&self) -> Vec<Extension> {
+        R::extensions()
+    }
+
     async fn list(&self, filter: FilterQuery) -> Result<Value> {
         let mut list = self.service.list(filter).await?;
         for resource in &mut list.resources {
             finalize(resource);
         }
-        to_body(&list)
+        let mut value = to_body(&list)?;
+        if let Some(resources) = value.get_mut("Resources").and_then(Value::as_array_mut) {
+            for resource in resources {
+                reconcile_schemas(resource, R::SCHEMA, &self.extension_urns);
+            }
+        }
+        Ok(value)
     }
 
     async fn create(&self, body: Value) -> Result<Value> {
         let mut created = self.service.create(from_body::<R>(body)?).await?;
-        finalize(&mut created);
-        to_body(&created)
+        self.body(&mut created)
     }
 
     async fn get(&self, id: &str) -> Result<Value> {
         let mut resource = self.service.get(parse_id::<R>(id)?).await?;
-        finalize(&mut resource);
-        to_body(&resource)
+        self.body(&mut resource)
     }
 
     async fn replace(&self, id: &str, body: Value) -> Result<Value> {
@@ -185,16 +245,12 @@ where
             .service
             .replace(parse_id::<R>(id)?, from_body::<R>(body)?)
             .await?;
-        finalize(&mut replaced);
-        to_body(&replaced)
+        self.body(&mut replaced)
     }
 
     async fn patch(&self, id: &str, op: PatchOp) -> Result<Option<Value>> {
         match self.service.patch(parse_id::<R>(id)?, op).await? {
-            ValOrEmpty::Val(mut patched) => {
-                finalize(&mut patched);
-                Ok(Some(to_body(&patched)?))
-            }
+            ValOrEmpty::Val(mut patched) => Ok(Some(self.body(&mut patched)?)),
             ValOrEmpty::Empty => Ok(None),
         }
     }

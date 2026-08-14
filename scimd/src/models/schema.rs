@@ -31,6 +31,34 @@ impl Schema {
     }
 }
 
+/// A schema a resource type carries in addition to its core one, namespaced under its own URN -
+/// the Enterprise User extension being the canonical case (RFC 7643 section 4.3).
+///
+/// This is the declaration side; [`super::SchemaExtension`] is the pared-down form `/ResourceTypes`
+/// puts on the wire.
+#[derive(Debug)]
+pub struct Extension {
+    pub schema: Schema,
+    /// Whether a resource of this type must carry the extension.
+    pub required: bool,
+}
+
+impl Extension {
+    pub fn optional(schema: Schema) -> Self {
+        Self {
+            schema,
+            required: false,
+        }
+    }
+
+    pub fn required(schema: Schema) -> Self {
+        Self {
+            schema,
+            required: true,
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct Attributes {
     pub name: String,

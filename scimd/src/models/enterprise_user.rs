@@ -1,3 +1,7 @@
+/// The URN this extension is namespaced under. `User` names it in a `serde(rename = ...)`, which
+/// needs a literal, so `enterprise_user_is_namespaced_under_its_urn` pins the two together.
+pub const SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct EnterpriseUser {
     #[serde(rename = "employeeNumber", skip_serializing_if = "Option::is_none")]
@@ -14,11 +18,12 @@ pub struct EnterpriseUser {
     pub manager: Option<Manager>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct Manager {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    #[serde(rename = "$ref")]
+    #[serde(rename = "$ref", skip_serializing_if = "Option::is_none")]
     pub ref_: Option<String>,
-    #[serde(rename = "displayName")]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }
