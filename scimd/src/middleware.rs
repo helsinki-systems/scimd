@@ -1,16 +1,27 @@
-use actix_web::{body, dev, error::ResponseError as _, web};
+//! The checks every request to the SCIM scope passes before it reaches a handler.
+//!
+//! Content negotiation lives here rather than in an actix guard on the scope: a guard that does
+//! not match makes the route disappear, so a client with the wrong `Accept` would be told the
+//! endpoint does not exist instead of that its `Accept` is the problem.
+
+use actix_web::{body, dev, error::ResponseError as _, http::header, web};
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use std::rc::Rc;
 use std::{future, task};
 
 use crate::State;
 
-pub struct TokenService<S> {
+pub struct ScimService<S> {
     service: Rc<S>,
 }
 
 const AUTH_HEADER_NAME: &str = "Authorization";
 const AUTH_TOKEN_PREFIX: &str = "Bearer ";
+
+/// What scimd sends. RFC 7644 section 3.1.
+pub const SCIM_MEDIA_TYPE: &str = "application/scim+json";
+/// Which that same section allows a SCIM server to answer with as well.
+pub const JSON_MEDIA_TYPE: &str = "application/json";
 
 pub async fn validate_token(req: &dev::ServiceRequest) -> Result<(), super::Error> {
     let extracted_token = req
@@ -39,7 +50,39 @@ pub async fn validate_token(req: &dev::ServiceRequest) -> Result<(), super::Erro
     }
 }
 
-impl<S> dev::Service<dev::ServiceRequest> for TokenService<S>
+/// Whether the client will take what we are going to send.
+///
+/// Per RFC 7231 section 5.3.2 an absent or empty `Accept` means the client accepts anything, and
+/// `*/*` and `application/*` both cover [`SCIM_MEDIA_TYPE`]. Media types are compared
+/// case-insensitively, as that section requires.
+pub fn validate_accept(req: &dev::ServiceRequest) -> Result<(), super::Error> {
+    let Some(accept) = req.headers().get(header::ACCEPT) else {
+        return Ok(());
+    };
+    let accept = accept
+        .to_str()
+        .map_err(|_| super::Error::NotAcceptable("the Accept header is not valid text".into()))?;
+    if accept.trim().is_empty() {
+        return Ok(());
+    }
+
+    let acceptable = accept.split(',').any(|range| {
+        let range = range.split(';').next().unwrap_or_default().trim();
+        ["*/*", "application/*", SCIM_MEDIA_TYPE, JSON_MEDIA_TYPE]
+            .iter()
+            .any(|known| range.eq_ignore_ascii_case(known))
+    });
+
+    if acceptable {
+        Ok(())
+    } else {
+        Err(super::Error::NotAcceptable(format!(
+            "this endpoint answers {SCIM_MEDIA_TYPE}, which '{accept}' does not accept"
+        )))
+    }
+}
+
+impl<S> dev::Service<dev::ServiceRequest> for ScimService<S>
 where
     S: dev::Service<
             dev::ServiceRequest,
@@ -59,8 +102,13 @@ where
         let srv = self.service.clone();
 
         async move {
-            match validate_token(&req).await {
-                Ok(_) => Ok(srv.call(req).await?),
+            // Authorization first: an unauthenticated client learns nothing from the reply beyond
+            // that it is unauthenticated.
+            match validate_token(&req)
+                .await
+                .and_then(|()| validate_accept(&req))
+            {
+                Ok(()) => Ok(srv.call(req).await?),
                 Err(e) => Ok(req.into_response(e.error_response())),
             }
         }
@@ -68,8 +116,8 @@ where
     }
 }
 
-pub struct TokenMiddleware {}
-impl<S> dev::Transform<S, dev::ServiceRequest> for TokenMiddleware
+pub struct ScimMiddleware {}
+impl<S> dev::Transform<S, dev::ServiceRequest> for ScimMiddleware
 where
     S: dev::Service<
             dev::ServiceRequest,
@@ -80,16 +128,16 @@ where
     type Response = dev::ServiceResponse<body::BoxBody>;
     type Error = actix_web::Error;
     type Future = future::Ready<Result<Self::Transform, Self::InitError>>;
-    type Transform = TokenService<S>;
+    type Transform = ScimService<S>;
     type InitError = ();
 
     fn new_transform(&self, service: S) -> Self::Future {
-        future::ready(Ok(TokenService {
+        future::ready(Ok(ScimService {
             service: Rc::new(service),
         }))
     }
 }
 
-pub fn token() -> TokenMiddleware {
-    TokenMiddleware {}
+pub fn scim() -> ScimMiddleware {
+    ScimMiddleware {}
 }

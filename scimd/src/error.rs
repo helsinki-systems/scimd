@@ -26,15 +26,19 @@ pub enum Error {
 
     #[error("Payload too large. Details={0}")]
     PayloadTooLarge(String),
+
+    #[error("Not acceptable. Details={0}")]
+    NotAcceptable(String),
 }
 
 impl Error {
     pub(crate) fn get_detail(&self) -> Option<String> {
         match &self {
             Self::InternalError(_) | Self::Unauthorized => None,
-            Self::BadRequest(v) | Self::InvalidValue(v) | Self::PayloadTooLarge(v) => {
-                Some(v.to_owned())
-            }
+            Self::BadRequest(v)
+            | Self::InvalidValue(v)
+            | Self::PayloadTooLarge(v)
+            | Self::NotAcceptable(v) => Some(v.to_owned()),
             _ => Some(self.to_string()),
         }
     }
@@ -64,6 +68,7 @@ impl ResponseError for Error {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) | Self::InvalidValue(_) => StatusCode::BAD_REQUEST,
             Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::NotAcceptable(_) => StatusCode::NOT_ACCEPTABLE,
         }
     }
 

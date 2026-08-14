@@ -364,15 +364,6 @@ async fn not_found() -> actix_web::HttpResponse {
     actix_web::HttpResponse::NotFound().finish()
 }
 
-fn accept_scim_json(ctx: &actix_web::guard::GuardContext) -> bool {
-    ctx.head()
-        .headers()
-        .get(http::header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.contains("application/scim+json"))
-        .unwrap_or(false)
-}
-
 /// actix's own payload limit would otherwise reject a large bulk body before
 /// [`bulk_operations`] can turn it into a SCIM `413`.
 fn bulk_payload_config(state: &State) -> web::PayloadConfig {
@@ -389,8 +380,7 @@ fn bulk_payload_config(state: &State) -> web::PayloadConfig {
 /// discovery endpoints.
 fn configure(cfg: &mut web::ServiceConfig, state: State) {
     let mut scope = web::scope(SCIM_BASE_PATH)
-        .guard(actix_web::guard::fn_guard(accept_scim_json))
-        .wrap(middleware::token())
+        .wrap(middleware::scim())
         .service(web::resource("/ServiceProviderConfig").route(web::get().to(service_provider)))
         .service(web::resource("/ResourceTypes").route(web::get().to(list_resource_types)))
         .service(web::resource("/ResourceTypes/{id}").route(web::get().to(get_resource_type)))

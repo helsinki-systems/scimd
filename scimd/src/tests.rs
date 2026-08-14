@@ -269,18 +269,61 @@ async fn unregistered_endpoint_is_404() {
 }
 
 #[actix_web::test]
-async fn scim_accept_header_is_required() {
+async fn acceptable_media_types_are_served() {
     let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
 
-    let resp = actix_test::call_service(
-        &app,
-        actix_test::TestRequest::default()
-            .uri("/v2/Things")
-            .insert_header((header::ACCEPT, "application/json"))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    for accept in [
+        None,
+        Some(""),
+        Some("*/*"),
+        Some("application/*"),
+        Some("application/scim+json"),
+        Some("application/json"),
+        Some("APPLICATION/SCIM+JSON"),
+        Some("application/scim+json; charset=utf-8"),
+        Some("text/html, application/xhtml+xml, application/scim+json;q=0.1"),
+        Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+    ] {
+        let mut req = actix_test::TestRequest::default().uri("/v2/Things");
+        if let Some(accept) = accept {
+            req = req.insert_header((header::ACCEPT, accept));
+        }
+
+        let resp = actix_test::call_service(&app, req.to_request()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "Accept: {accept:?} should have been served"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn unacceptable_media_types_are_406_not_404() {
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+
+    for accept in ["text/html", "application/xml", "text/plain, image/png"] {
+        let resp = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::default()
+                .uri("/v2/Things")
+                .insert_header((header::ACCEPT, accept))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_ACCEPTABLE,
+            "Accept: {accept} should have been refused"
+        );
+
+        let body: serde_json::Value = actix_test::read_body_json(resp).await;
+        assert_eq!(
+            body["schemas"][0],
+            "urn:ietf:params:scim:api:messages:2.0:Error"
+        );
+        assert_eq!(body["status"], "406");
+    }
 }
 
 #[actix_web::test]
