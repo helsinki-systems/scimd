@@ -24,7 +24,7 @@ pub use resource::{Resource, ResourceService};
 use metrics::{Metrics, Operation, Source};
 use resource::ErasedHandler;
 
-pub(crate) const SCIM_BASE_PATH: &str = "/v2";
+pub const SCIM_BASE_PATH: &str = "/v2";
 
 /// Keyed by [`Resource::ENDPOINT`], and ordered so that `/ResourceTypes` and `/Schemas` render
 /// deterministically.
