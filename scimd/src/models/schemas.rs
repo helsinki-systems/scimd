@@ -13,15 +13,15 @@ fn value_display_type_primary(
     canonical_values: &[&str],
     primary_description: &str,
 ) -> Vec<SubAttributes> {
-    let mut type_ = SubAttributes::new("type", "string").description(type_description);
+    let mut r#type = SubAttributes::new("type", "string").description(type_description);
     if !canonical_values.is_empty() {
-        type_ = type_.canonical_values(canonical_values);
+        r#type = r#type.canonical_values(canonical_values);
     }
 
     vec![
         value,
         SubAttributes::new("display", "string").description(DISPLAY_DESCRIPTION),
-        type_,
+        r#type,
         SubAttributes::new("primary", "boolean").description(primary_description),
     ]
 }

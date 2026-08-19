@@ -59,9 +59,9 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(rename = "$ref", skip_serializing_if = "Option::is_none")]
-    pub ref_: Option<String>,
+    pub r#ref: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub type_: Option<String>,
+    pub r#type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
 }

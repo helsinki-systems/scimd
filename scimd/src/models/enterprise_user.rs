@@ -23,7 +23,7 @@ pub struct Manager {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(rename = "$ref", skip_serializing_if = "Option::is_none")]
-    pub ref_: Option<String>,
+    pub r#ref: Option<String>,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }

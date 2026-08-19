@@ -140,7 +140,7 @@ impl FilterConfig {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AuthenticationScheme {
     #[serde(rename = "type")]
-    pub type_: String,
+    pub r#type: String,
 
     pub name: String,
     pub description: Option<String>,
@@ -156,7 +156,7 @@ pub struct AuthenticationScheme {
 impl AuthenticationScheme {
     pub fn bearer() -> Self {
         Self {
-            type_: "oauthbearertoken".into(),
+            r#type: "oauthbearertoken".into(),
             name: "OAuth Bearer Token".into(),
             description: Some("Authentication scheme using the OAuth Bearer Token Standard".into()),
             spec_uri: Some("http://www.rfc-editor.org/info/rfc6750".into()),

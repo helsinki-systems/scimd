@@ -63,7 +63,7 @@ impl Extension {
 pub struct Attributes {
     pub name: String,
     #[serde(rename = "type")]
-    pub type_: String,
+    pub r#type: String,
     #[serde(rename = "multiValued")]
     pub multi_valued: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,11 +89,11 @@ pub struct Attributes {
 macro_rules! attribute_builders {
     ($t:ty) => {
         impl $t {
-            pub fn new(name: &str, type_: &str) -> Self {
-                let string_like = matches!(type_, "string" | "reference" | "binary");
+            pub fn new(name: &str, r#type: &str) -> Self {
+                let string_like = matches!(r#type, "string" | "reference" | "binary");
                 Self {
                     name: name.into(),
-                    type_: type_.into(),
+                    r#type: r#type.into(),
                     required: Some(false),
                     case_exact: string_like.then_some(false),
                     mutability: Some("readWrite".into()),
@@ -165,7 +165,7 @@ impl Attributes {
 pub struct SubAttributes {
     pub name: String,
     #[serde(rename = "type")]
-    pub type_: String,
+    pub r#type: String,
     #[serde(rename = "multiValued")]
     pub multi_valued: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

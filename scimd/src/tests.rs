@@ -700,7 +700,7 @@ fn builtin_schemas_are_well_formed() {
         );
 
         for attribute in &schema.attributes {
-            if attribute.type_ == "complex" {
+            if attribute.r#type == "complex" {
                 assert!(
                     attribute
                         .sub_attributes
@@ -710,7 +710,7 @@ fn builtin_schemas_are_well_formed() {
                     attribute.name
                 );
             }
-            if matches!(attribute.type_.as_str(), "complex" | "boolean") {
+            if matches!(attribute.r#type.as_str(), "complex" | "boolean") {
                 assert_eq!(
                     (attribute.case_exact, attribute.uniqueness.as_deref()),
                     (None, None),
