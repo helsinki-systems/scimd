@@ -7,6 +7,8 @@ pub struct User {
     pub schemas: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
     #[serde(rename = "userName")]
     pub user_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +94,7 @@ impl Default for User {
             schemas: vec![Self::SCHEMA.to_string()],
             user_name: "".to_string(),
             id: None,
+            external_id: None,
             name: None,
             display_name: None,
             nick_name: None,
@@ -207,7 +210,7 @@ pub struct Group {
     pub ref_: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_: Option<String>,
 }
 

@@ -7,6 +7,8 @@ pub struct Group {
     pub schemas: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,6 +46,7 @@ impl Default for Group {
         Group {
             schemas: vec![Self::SCHEMA.to_string()],
             id: None,
+            external_id: None,
             display_name: String::new(),
             members: None,
             meta: None,
