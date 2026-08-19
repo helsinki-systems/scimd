@@ -24,6 +24,9 @@ pub enum Error {
     #[error("Invalid value. Details={0}")]
     InvalidValue(String),
 
+    #[error("Invalid filter. Details={0}")]
+    InvalidFilter(String),
+
     #[error("Payload too large. Details={0}")]
     PayloadTooLarge(String),
 
@@ -37,6 +40,7 @@ impl Error {
             Self::InternalError(_) | Self::Unauthorized => None,
             Self::BadRequest(v)
             | Self::InvalidValue(v)
+            | Self::InvalidFilter(v)
             | Self::PayloadTooLarge(v)
             | Self::NotAcceptable(v) => Some(v.to_owned()),
             _ => Some(self.to_string()),
@@ -53,6 +57,7 @@ impl Error {
             Self::NotFound(_) => "not_found",
             Self::BadRequest(_) => "bad_request",
             Self::InvalidValue(_) => "invalid_value",
+            Self::InvalidFilter(_) => "invalid_filter",
             Self::PayloadTooLarge(_) => "too_large",
             Self::NotAcceptable(_) => "not_acceptable",
         }
@@ -61,6 +66,7 @@ impl Error {
     pub(crate) fn scim_type(&self) -> Option<&'static str> {
         match &self {
             Self::InvalidValue(_) => Some("invalidValue"),
+            Self::InvalidFilter(_) => Some("invalidFilter"),
             Self::PayloadTooLarge(_) => Some("tooLarge"),
             _ => None,
         }
@@ -81,7 +87,9 @@ impl ResponseError for Error {
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) | Self::InvalidValue(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::InvalidValue(_) | Self::InvalidFilter(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::NotAcceptable(_) => StatusCode::NOT_ACCEPTABLE,
         }

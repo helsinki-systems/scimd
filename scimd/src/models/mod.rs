@@ -19,7 +19,7 @@ pub use filter::FilterQuery;
 pub use group::Group;
 pub use list::ListResponse;
 pub use meta::Meta;
-pub use patchop::PatchOp;
+pub use patchop::{PatchOp, normalize_attr};
 pub use resource_type::{ResourceType, SchemaExtension};
 pub use schema::{Attributes, Extension, Schema, SubAttributes};
 pub use search::SearchRequest;
