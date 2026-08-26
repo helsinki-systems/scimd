@@ -6,6 +6,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 
 mod bulk;
 mod error;
+pub mod filter;
 pub(crate) mod metrics;
 pub mod middleware;
 pub mod models;

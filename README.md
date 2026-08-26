@@ -63,6 +63,48 @@ resolution is sequential, so the operation defining a `bulkId` must come before 
 `startIndex`/`count` on a list request are passed to the service untouched - scimd never slices a
 result set itself. A service that pages should answer with `ListResponse::paginated`.
 
+### Filtering
+
+`filter` arrives as an opaque string on `FilterQuery` and is passed to the service untouched.
+`scimd::filter::parse` turns one into a `Filter` - the RFC 7644 section 3.4.2.2 grammar, all of it,
+`valuePath` brackets included - and a `Filter` matches against a resource:
+
+```rust
+async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
+    let filter = query.filter.as_deref().map(scimd::filter::parse).transpose()?;
+    // ... keep a device when `filter` is None or `filter.matches_resource(device)?`
+}
+```
+
+Parsing is the service's call rather than scimd's, because a backend that filters in its own store
+wants the predicate, not a decision already made for it - the AST is public so it can be walked and
+pushed down instead of matched here. A filter that does not parse is already an
+`Error::InvalidFilter`, so a service that writes `?` answers a `400` with `scimType: invalidFilter`
+and the character the grammar broke at.
+
+A filter comes off the network, so it has a size: `filter::MAX_LENGTH` bytes and `filter::MAX_DEPTH`
+levels of `(` and `[`, both an order of magnitude past anything a client sends. Past either it is an
+`Error::InvalidFilter` rather than a parse, because the depth a filter parses to is the depth
+matching and dropping it recurse to, and a stack overflow in Rust takes the process with it.
+
+Matching is driven by the resource's JSON rather than by its declared schema. Attribute names are
+compared case-insensitively (RFC 7643 section 2.1) and so are string values, since `caseExact`
+defaults to false. A multi-valued attribute matches when any of its values does, and a `valuePath`
+such as `emails[type eq "work" and value co "@example.com"]` needs one element to satisfy every
+condition rather than the attribute as a whole. An attribute the resource does not carry matches
+nothing, and neither does a comparison between mismatched types - a question that cannot be asked
+of a resource is answered no, never with an error. A fully qualified `attrPath` is read against the
+URN it names: an extension's attributes are looked up inside that extension, a URN the resource
+lists among its `schemas` reads at the root, and a URN it claims neither way matches nothing rather
+than falling through to a core attribute of the same name.
+
+A service that does not want to filter should say so twice: leave `.with_filter(...)` at its
+default of `false` so `/ServiceProviderConfig` is honest, and refuse a request that carries a
+`filter` anyway with `Error::InvalidFilter`.
+
+Ignoring the parameter is the one thing not to do: it answers a narrow question with the whole
+collection, and the client has no way to tell the difference.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text exposition. It is off by default:

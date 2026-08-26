@@ -880,6 +880,40 @@ async fn search_reaches_the_same_list_as_get() {
 }
 
 #[actix_web::test]
+async fn a_filter_survives_the_query_string_and_parses() {
+    let store = ThingStore::default();
+    let seen = store.seen.clone();
+    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let _ = seed!(app, "first");
+
+    let listed: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(
+            Method::GET,
+            "/v2/Things?filter=displayName%20eq%20%22first%22",
+        )
+        .to_request(),
+    )
+    .await;
+
+    let raw = seen
+        .lock()
+        .expect("store is not poisoned")
+        .as_ref()
+        .expect("list was called")
+        .filter
+        .clone()
+        .expect("the filter reached the service");
+    assert_eq!(raw, r#"displayName eq "first""#, "decoded, quotes and all");
+
+    let filter = crate::filter::parse(&raw).expect("a decoded filter parses");
+    assert!(
+        filter.matches(&listed["Resources"][0]),
+        "and matches the resource the service answered with"
+    );
+}
+
+#[actix_web::test]
 async fn search_route_is_not_swallowed_by_the_id_route() {
     let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
 

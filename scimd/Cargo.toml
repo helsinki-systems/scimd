@@ -12,6 +12,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
+nom.workspace = true
 prometheus = { workspace = true, default-features = false }
 sd-notify.workspace = true
 thiserror.workspace = true
