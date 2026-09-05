@@ -1,85 +1,39 @@
-//! The checks every request to the SCIM scope passes before it reaches a handler.
-//!
-//! Content negotiation lives here rather than in an actix guard on the scope: a guard that does
-//! not match makes the route disappear, so a client with the wrong `Accept` would be told the
-//! endpoint does not exist instead of that its `Accept` is the problem.
+//! Authentication and content negotiation for every request to the SCIM scope, wrapping the checks
+//! in [`scimd_core::headers`].
 
-use actix_web::{body, dev, error::ResponseError as _, http::header, web};
+use actix_web::{body, dev, error::ResponseError as _, http::header};
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use std::rc::Rc;
 use std::{future, task};
 
-use crate::State;
+use scimd_core::headers;
+
+pub use scimd_core::headers::{JSON_MEDIA_TYPE, SCIM_MEDIA_TYPE};
+
+/// What a mount checks the `Authorization` header against.
+#[derive(Clone, Debug)]
+pub enum Auth {
+    /// Every request must present exactly this bearer token.
+    Bearer(Rc<str>),
+    /// No token is configured, and a request presenting one anyway is refused - see
+    /// [`scimd_core::headers::validate_token`]. This is *not* "no authentication".
+    None,
+    /// The host authenticated the request before it reached the mount, so the header is not read
+    /// at all - which is what a host that authenticates upstream wants.
+    Upstream,
+}
+
+impl Auth {
+    /// So that a caller never has to name `Rc`.
+    #[must_use]
+    pub fn bearer(token: &str) -> Self {
+        Self::Bearer(Rc::from(token))
+    }
+}
 
 pub struct ScimService<S> {
     service: Rc<S>,
-}
-
-const AUTH_HEADER_NAME: &str = "Authorization";
-const AUTH_TOKEN_PREFIX: &str = "Bearer ";
-
-/// What scimd sends. RFC 7644 section 3.1.
-pub const SCIM_MEDIA_TYPE: &str = "application/scim+json";
-/// Which that same section allows a SCIM server to answer with as well.
-pub const JSON_MEDIA_TYPE: &str = "application/json";
-
-pub async fn validate_token(req: &dev::ServiceRequest) -> Result<(), super::Error> {
-    let extracted_token = req
-        .headers()
-        .get(AUTH_HEADER_NAME)
-        .and_then(|v| v.to_str().ok())
-        .map(|t| {
-            t.strip_prefix(AUTH_TOKEN_PREFIX)
-                .ok_or(super::Error::Unauthorized)
-                .map(|v| v.to_owned())
-        })
-        .map_or(Ok(None), |v| v.map(Some))?;
-
-    let bt = req
-        .app_data::<web::Data<State>>()
-        .ok_or(super::Error::InternalError(anyhow::anyhow!(
-            "No internal app state found"
-        )))?
-        .bearer_token
-        .clone();
-
-    if extracted_token == bt {
-        Ok(())
-    } else {
-        Err(super::Error::Unauthorized)
-    }
-}
-
-/// Whether the client will take what we are going to send.
-///
-/// Per RFC 7231 section 5.3.2 an absent or empty `Accept` means the client accepts anything, and
-/// `*/*` and `application/*` both cover [`SCIM_MEDIA_TYPE`]. Media types are compared
-/// case-insensitively, as that section requires.
-pub fn validate_accept(req: &dev::ServiceRequest) -> Result<(), super::Error> {
-    let Some(accept) = req.headers().get(header::ACCEPT) else {
-        return Ok(());
-    };
-    let accept = accept
-        .to_str()
-        .map_err(|_| super::Error::NotAcceptable("the Accept header is not valid text".into()))?;
-    if accept.trim().is_empty() {
-        return Ok(());
-    }
-
-    let acceptable = accept.split(',').any(|range| {
-        let range = range.split(';').next().unwrap_or_default().trim();
-        ["*/*", "application/*", SCIM_MEDIA_TYPE, JSON_MEDIA_TYPE]
-            .iter()
-            .any(|known| range.eq_ignore_ascii_case(known))
-    });
-
-    if acceptable {
-        Ok(())
-    } else {
-        Err(super::Error::NotAcceptable(format!(
-            "this endpoint answers {SCIM_MEDIA_TYPE}, which '{accept}' does not accept"
-        )))
-    }
+    auth: Auth,
 }
 
 impl<S> dev::Service<dev::ServiceRequest> for ScimService<S>
@@ -100,23 +54,34 @@ where
 
     fn call(&self, req: dev::ServiceRequest) -> Self::Future {
         let srv = self.service.clone();
+        let auth = self.auth.clone();
 
         async move {
-            // Authorization first: an unauthenticated client learns nothing from the reply beyond
-            // that it is unauthenticated.
-            match validate_token(&req)
-                .await
-                .and_then(|()| validate_accept(&req))
+            let header = |name| req.headers().get(name).map(header::HeaderValue::as_bytes);
+            let authenticated = match &auth {
+                // Not even to refuse it: the host already read the header, and what it means is
+                // between the host and its own identity provider.
+                Auth::Upstream => Ok(()),
+                Auth::Bearer(token) => {
+                    headers::validate_token(header(header::AUTHORIZATION.as_str()), Some(token))
+                }
+                Auth::None => headers::validate_token(header(header::AUTHORIZATION.as_str()), None),
+            };
+            match authenticated
+                .and_then(|()| headers::validate_accept(header(header::ACCEPT.as_str())))
             {
                 Ok(()) => Ok(srv.call(req).await?),
-                Err(e) => Ok(req.into_response(e.error_response())),
+                Err(e) => Ok(req.into_response(crate::ScimError::from(e).error_response())),
             }
         }
         .boxed_local()
     }
 }
 
-pub struct ScimMiddleware {}
+pub struct ScimMiddleware {
+    auth: Auth,
+}
+
 impl<S> dev::Transform<S, dev::ServiceRequest> for ScimMiddleware
 where
     S: dev::Service<
@@ -134,10 +99,13 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         future::ready(Ok(ScimService {
             service: Rc::new(service),
+            auth: self.auth.clone(),
         }))
     }
 }
 
-pub fn scim() -> ScimMiddleware {
-    ScimMiddleware {}
+/// What to check is injected rather than looked up out of app data, so that the middleware is
+/// usable wherever a host puts it.
+pub fn scim(auth: Auth) -> ScimMiddleware {
+    ScimMiddleware { auth }
 }

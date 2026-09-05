@@ -32,12 +32,12 @@ impl Default for ServiceProviderConfig {
                 "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig".to_string(),
             ],
             documentation_uri: None,
-            patch: Supported::r#false(),
-            bulk: BulkConfig::r#false(),
-            filter: FilterConfig::r#false(),
-            change_password: Supported::r#false(),
-            sort: Supported::r#false(),
-            etag: Supported::r#false(),
+            patch: Supported::default(),
+            bulk: BulkConfig::default(),
+            filter: FilterConfig::default(),
+            change_password: Supported::default(),
+            sort: Supported::default(),
+            etag: Supported::default(),
             authentication_schemes: vec![],
             meta: None,
         }
@@ -80,7 +80,7 @@ impl ServiceProviderConfig {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct Supported {
     supported: bool,
 }
@@ -89,13 +89,9 @@ impl Supported {
     pub fn new(supported: bool) -> Self {
         Self { supported }
     }
-
-    pub fn r#false() -> Self {
-        Self { supported: false }
-    }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct BulkConfig {
     pub supported: bool,
     #[serde(rename = "maxOperations", skip_serializing_if = "Option::is_none")]
@@ -104,21 +100,11 @@ pub struct BulkConfig {
     pub max_payload_size: Option<u32>,
 }
 
-impl BulkConfig {
-    pub fn r#false() -> Self {
-        Self {
-            supported: false,
-            max_operations: None,
-            max_payload_size: None,
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct FilterConfig {
-    supported: bool,
+    pub supported: bool,
     #[serde(rename = "maxResults", skip_serializing_if = "Option::is_none")]
-    max_results: Option<u32>,
+    pub max_results: Option<u32>,
 }
 
 impl FilterConfig {
@@ -128,16 +114,9 @@ impl FilterConfig {
             max_results,
         }
     }
-
-    pub fn r#false() -> Self {
-        Self {
-            supported: false,
-            max_results: None,
-        }
-    }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuthenticationScheme {
     #[serde(rename = "type")]
     pub r#type: String,

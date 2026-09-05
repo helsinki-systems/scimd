@@ -3,7 +3,7 @@
 ///
 /// `start_index` and `count` are passed to the service as given; scimd never slices a result set
 /// itself, so a service is free to push them down into its backend or to ignore them.
-#[derive(serde::Deserialize, Debug, Default)]
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 pub struct FilterQuery {
     pub filter: Option<String>,
     #[serde(rename = "sortBy")]

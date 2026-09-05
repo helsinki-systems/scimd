@@ -211,10 +211,8 @@ fn a_refused_filter_says_where_it_broke() {
 fn a_refused_filter_is_a_400_with_an_invalid_filter_scim_type() {
     let error = parse("(((").expect_err("`(((` is not a filter");
     assert!(matches!(error, Error::InvalidFilter(_)), "got {error}");
-    assert_eq!(
-        actix_web::ResponseError::status_code(&error),
-        actix_web::http::StatusCode::BAD_REQUEST
-    );
+    assert_eq!(error.status(), crate::StatusCode::BAD_REQUEST);
+    assert_eq!(error.scim_type(), Some("invalidFilter"));
 }
 
 #[test]

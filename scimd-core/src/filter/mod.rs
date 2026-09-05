@@ -1,26 +1,14 @@
 //! Parsing and evaluation of SCIM filters (RFC 7644 section 3.4.2.2).
 //!
-//! `filter` reaches a service as an opaque string on [`crate::models::FilterQuery`]; this module is
-//! what turns one into something a service can answer with. [`parse`] reads the grammar into a
-//! [`Filter`], and [`Filter::matches`] evaluates it against a resource's JSON, so a service backed
-//! by a collection it can read whole gets filtering without writing any of it:
-//!
 //! ```
-//! let filter = scimd::filter::parse(r#"userName eq "bjensen""#).expect("a valid filter");
-//! let user = serde_json::json!({ "userName": "bjensen" });
-//! assert!(filter.matches(&user));
+//! let filter = scimd_core::filter::parse(r#"userName eq "bjensen""#).expect("a valid filter");
+//! assert!(filter.matches(&serde_json::json!({ "userName": "bjensen" })));
 //! ```
 //!
-//! A filter that does not parse comes back as [`crate::Error::InvalidFilter`], which is a `400`
-//! carrying `scimType: invalidFilter` - the answer RFC 7644 section 3.12 asks for.
-//!
-//! Evaluation is driven by the shape of the JSON rather than by the resource's schema, which has
-//! two consequences worth knowing. Attribute names are matched case-insensitively (RFC 7643
-//! section 2.1) but so are *values*, because RFC 7643 section 7 defaults `caseExact` to false and
-//! nothing here knows which attributes declare otherwise - a `caseExact` attribute is matched more
-//! loosely than its schema asks. And a comparison whose operands have no ordering, such as
-//! `active gt true`, is simply not a match rather than an error, since an empty result set answers
-//! a nonsensical filter better than a `500` does.
+//! Evaluation reads the JSON, not the resource's schema, with two consequences. Values are matched
+//! case-insensitively as well as attribute names, because RFC 7643 section 7 defaults `caseExact`
+//! to false and nothing here knows which attributes declare otherwise. And a comparison whose
+//! operands have no ordering, such as `active gt true`, is not a match rather than an error.
 
 mod eval;
 mod parser;
@@ -86,8 +74,7 @@ impl Filter {
     ///
     /// # Errors
     ///
-    /// [`crate::Error::InternalError`] if the resource cannot be serialised, which for a type that
-    /// round-trips through the SCIM routes at all cannot happen.
+    /// [`crate::Error::InternalError`] if the resource cannot be serialised.
     pub fn matches_resource<T: serde::Serialize>(&self, resource: &T) -> crate::Result<bool> {
         let value = serde_json::to_value(resource).map_err(|e| {
             anyhow::Error::new(e).context("serialising a resource to match a filter against it")

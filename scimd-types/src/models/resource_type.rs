@@ -29,13 +29,18 @@ impl ResourceType {
             schema_extensions: vec![],
             meta: Some(Meta {
                 resource_type: Some("ResourceType".into()),
-                location: Some(format!(
-                    "{}/ResourceTypes/{resource_type}",
-                    crate::SCIM_BASE_PATH
-                )),
                 ..Default::default()
             }),
         }
+    }
+
+    /// Points `meta.location` at this resource type on a server serving `/ResourceTypes` under
+    /// `base`. Left unset by [`ResourceType::new`] for the reason given on [`super::Schema::new`].
+    #[must_use]
+    pub fn at_base(mut self, base: &str) -> Self {
+        let location = format!("{base}/ResourceTypes/{}", self.id);
+        self.meta.get_or_insert_default().location = Some(location);
+        self
     }
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {

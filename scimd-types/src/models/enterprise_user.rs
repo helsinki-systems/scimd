@@ -2,7 +2,7 @@
 /// needs a literal, so `enterprise_user_is_namespaced_under_its_urn` pins the two together.
 pub const SCHEMA: &str = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct EnterpriseUser {
     #[serde(rename = "employeeNumber", skip_serializing_if = "Option::is_none")]
     pub employee_number: Option<String>,
@@ -18,7 +18,7 @@ pub struct EnterpriseUser {
     pub manager: Option<Manager>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Manager {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,

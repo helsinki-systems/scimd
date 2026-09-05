@@ -12,17 +12,64 @@ one per resource type; scimd derives the routes, `/ResourceTypes` and `/Schemas`
 registered.
 
 ```rust
-let server = scimd::AppBuilder::new()
+let scim = scimd::ScimBuilder::new()
     .register::<scimd::models::User, _>(UserService::new())
-    .register::<Device, _>(DeviceService::new())  // a custom resource type; no framework changes
-    .bearer_token(token)
-    .build();
-server.run().await?;
+    .register::<Device, _>(DeviceService::new());  // a custom resource type; no framework changes
+let app = scimd::AppBuilder::new(scim).bearer_token(token).build();
+scimd_server::Server::new(app).run().await?;       // sockets, signals, /health, /metrics
 ```
+
+`ScimBuilder` describes the SCIM service; `AppBuilder` adds what only the HTTP layer decides.
 
 Every method of `ResourceService` defaults to returning `MethodNotImplemented`, so implement only
 the operations your product supports - the rest answer `501` on their own. `User` and `Group` ship
 with scimd as the two resource types RFC 7643 predefines; see `example/` for a custom one.
+
+### Mounting into a server you already have
+
+`scimd_server::Server` above binds its own sockets. A backend that already runs an actix-web
+`HttpServer` does not want a second process for SCIM, so `App::configure()` hands over the routes
+instead - and it needs only the `scimd` crate, not `scimd-server`:
+
+```rust
+let core = scimd::ScimBuilder::new()
+    .register::<scimd::models::User, _>(UserService::new())
+    .base_path("/scim/v2");
+let scim = scimd::AppBuilder::new(core).bearer_token(Some(token)).build();
+let scim_routes = scim.configure();           // built once, cloned per worker
+
+HttpServer::new(move || {
+    App::new()
+        .service(my_existing_api())
+        .configure(scim_routes.clone())
+})
+```
+
+`base_path` moves everything together - the routes, `meta.location`, and the locations
+`/ResourceTypes` and `/Schemas` publish - so a client that follows a link scimd gave it lands back
+on the mount. A host that would rather wrap the mount in a scope of its own keeps `base_path` at
+the default and says where a client actually sees it:
+
+```rust
+.location_base("/scim/v2")                    // routes stay at /v2
+// ...
+.service(web::scope("/scim").configure(scim_routes.clone()))
+```
+
+Authentication and `Accept` negotiation are scoped to the mount. Leaving `bearer_token` unset does
+not mean "unauthenticated": a request presenting a token anyway is refused, since a token nobody
+asked for says the client thinks it is talking to something else. A host whose own middleware
+already checked says `.authentication_handled_upstream(true)` instead, and then scimd does not read
+the header at all.
+
+A path inside the scope that matches no route answers a SCIM error document rather than falling
+through to the host's 404, and authentication runs first, so an unauthenticated request there is a
+`401` before it is a `404`.
+
+A mount does not bring `/health`, `/metrics` or `NormalizePath` - they are the host's to place, so
+a trailing slash 404s unless the host wraps it.
+
+`example-mounted/` is a working host: `cargo run -p example-mounted`.
 
 ### Schema extensions
 
@@ -107,11 +154,15 @@ collection, and the client has no way to tell the difference.
 
 ### Metrics
 
-`GET /metrics` serves Prometheus text exposition. It is off by default:
+Under `scimd-server`, `GET /metrics` serves Prometheus text exposition. It is off by default:
 
 ```rust
 .with_metrics(true)
 ```
+
+A host that mounts scimd serves its own exposition and asks `App::metrics_registry()` for the
+registry the SCIM collectors went into - `None` when metrics are off, so there is nothing to
+serve.
 
 The endpoint sits outside the SCIM scope, next to `/health`, so a scraper reaches it without a
 bearer token and without asking for `application/scim+json` - **keeping it off a public interface
@@ -122,6 +173,10 @@ from the same endpoint:
 let registry = prometheus::Registry::new();  // scimd::MetricsRegistry
 .metrics_registry(registry.clone())          // implies with_metrics(true)
 ```
+
+The SCIM collectors can only be registered once per registry, so a host that mounts scimd twice
+against one registry gets the series from the first mount; the second logs a warning and serves its
+routes without them.
 
 | Metric | Labels |
 |---|---|
@@ -148,10 +203,23 @@ all collapse into `UNKNOWN`. `/health` is excluded.
 ## Directory structure
 
 ```
-example/ # bin example: the built-in User resource, plus a custom Device resource
-gitlabd/ # microservice that creates users in gitlab on request
-scimd/   # library service that implements the interface and provides all necessary http endpoints
+example/         # bin example: the standalone server
+example-mounted/ # bin example: scimd mounted into a host's own app, on `scimd` alone
+gitlabd/         # microservice that creates users in gitlab on request
+scimd/           # the actix-web adapter: routes, middleware, App/AppBuilder/configure
+scimd-core/      # Scim: the registry, dispatch, /Bulk, discovery, filters and SCIM metrics
+scimd-server/    # the daemon: sockets, signals, --flags, config file, logging, /health, /metrics
+scimd-types/     # the data model, the Error a service answers with, and the Resource trait
 ```
+
+Only `scimd` and `scimd-server` know what a web framework is, and only `scimd-server` knows what a
+*process* is, so a host that mounts `scimd` into an `HttpServer` it already runs compiles none of
+the daemon. `scimd` re-exports everything below it - `scimd::models::User`, `scimd::Error` and
+`scimd::filter::parse` are the paths to write, whichever crate they live in.
+
+One exception: `scimd::Error` cannot implement actix's `ResponseError` from `scimd-types`.
+`scimd::ScimError` wraps it and does, and `?` converts, so a hand-written actix handler returns
+`Result<_, scimd::ScimError>`.
 
 ## Native dependencies for nix package in helsinki
 

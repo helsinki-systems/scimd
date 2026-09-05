@@ -1,7 +1,7 @@
 use super::{enterprise_user::EnterpriseUser, meta::Meta, schema::Schema};
 use crate::Resource;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct User {
     // urn:ietf:params:scim:schemas:core:2.0:User
     pub schemas: Vec<String>,
@@ -121,7 +121,7 @@ impl Default for User {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Name {
     pub formatted: Option<String>,
     #[serde(rename = "familyName", skip_serializing_if = "Option::is_none")]
@@ -136,7 +136,7 @@ pub struct Name {
     pub honorific_suffix: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Email {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -148,7 +148,7 @@ pub struct Email {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Address {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatted: Option<String>,
@@ -166,7 +166,7 @@ pub struct Address {
     pub r#type: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct PhoneNumber {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -178,7 +178,7 @@ pub struct PhoneNumber {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Im {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -190,7 +190,7 @@ pub struct Im {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Photo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -214,7 +214,7 @@ pub struct Group {
     pub r#type: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Entitlement {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -226,7 +226,7 @@ pub struct Entitlement {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -238,7 +238,7 @@ pub struct Role {
     pub primary: Option<bool>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct X509Certificate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,

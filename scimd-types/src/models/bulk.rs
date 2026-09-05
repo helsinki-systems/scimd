@@ -73,7 +73,7 @@ pub struct BulkOperationResult {
 }
 
 impl BulkOperationResult {
-    pub fn new(method: &str, bulk_id: Option<String>, status: actix_web::http::StatusCode) -> Self {
+    pub fn new(method: &str, bulk_id: Option<String>, status: http::StatusCode) -> Self {
         Self {
             location: None,
             method: method.to_string(),

@@ -1,5 +1,8 @@
+/// The SCIM error *document* as it goes on the wire (RFC 7644 section 3.12), which is what
+/// [`crate::Error::to_scim_error`] renders into. Not to be confused with [`crate::Error`], the
+/// enum a service returns.
 #[derive(serde::Serialize, Debug, Default)]
-pub(crate) struct Error {
+pub struct Error {
     // urn:ietf:params:scim:api:messages:2.0:Error
     schemas: Vec<String>,
     status: String,
@@ -10,7 +13,7 @@ pub(crate) struct Error {
 }
 
 impl Error {
-    pub fn new(status: actix_web::http::StatusCode) -> Self {
+    pub fn new(status: http::StatusCode) -> Self {
         Self {
             schemas: vec!["urn:ietf:params:scim:api:messages:2.0:Error".into()],
             status: status.as_u16().to_string(),

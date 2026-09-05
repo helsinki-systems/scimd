@@ -37,7 +37,7 @@ type Parsed<'a, T> = IResult<&'a str, T>;
 ///
 /// A filter arrives from the network, and its length is what bounds the depth of the [`Filter`] it
 /// parses to: `a pr and a pr and ...` folds to the left, so a chain of N terms is a tree N deep,
-/// which is how deep both [`Filter::matches`](crate::filter::Filter::matches) and the tree's own
+/// which is how deep both [`Filter::matches`](super::Filter::matches) and the tree's own
 /// `Drop` then recurse. A stack overflow in Rust aborts the process instead of unwinding, so a
 /// filter with no size is a way to stop a whole server - `POST /Users/.search` alone will carry two
 /// megabytes of one. Real filters run to a few hundred bytes, which leaves room to spare here.

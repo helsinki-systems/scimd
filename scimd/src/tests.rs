@@ -8,8 +8,7 @@ use uuid::Uuid;
 use crate::models::{
     FilterQuery, ListResponse, Meta, PatchOp, Schema, User, ValOrEmpty, enterprise_user,
 };
-use crate::resource::finalize;
-use crate::{AppBuilder, Error, Resource, ResourceService, Result, configure};
+use crate::{AppBuilder, Error, Resource, ResourceService, Result, ScimBuilder};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct Thing {
@@ -156,28 +155,17 @@ impl ResourceService<Thing> for SilentService {}
 
 macro_rules! test_app {
     ($builder:expr) => {{
-        let state = $builder.build().state(None);
-        actix_test::init_service(actix_web::App::new().configure(move |cfg| configure(cfg, state)))
-            .await
+        let routes = $builder.build().configure();
+        actix_test::init_service(actix_web::App::new().configure(routes)).await
     }};
 }
 
-macro_rules! full_app {
-    ($builder:expr, $metrics_enabled:expr) => {{
-        let app = $builder.with_metrics($metrics_enabled).build();
-        let metrics = app.metrics().expect("the metrics register cleanly");
-        let state = app.state($metrics_enabled.then(|| metrics.clone()));
-        let service =
-            actix_test::init_service(scim_app!(state, $metrics_enabled, metrics.middleware()))
-                .await;
-        (service, metrics)
-    }};
+fn thing_core() -> ScimBuilder {
+    ScimBuilder::new().register::<Thing, _>(ThingStore::default())
 }
 
-macro_rules! metrics_app {
-    ($builder:expr) => {
-        full_app!($builder, true)
-    };
+fn thing_app() -> AppBuilder {
+    AppBuilder::new(thing_core())
 }
 
 fn request(method: Method, uri: &str) -> actix_test::TestRequest {
@@ -189,7 +177,7 @@ fn request(method: Method, uri: &str) -> actix_test::TestRequest {
 
 #[actix_web::test]
 async fn crud_round_trip_through_dynamic_routes() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let created: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -241,7 +229,9 @@ async fn crud_round_trip_through_dynamic_routes() {
 
 #[actix_web::test]
 async fn unimplemented_operations_answer_501() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(SilentService {}));
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<Thing, _>(SilentService {})
+    ));
 
     for (method, uri) in [
         (Method::GET, "/v2/Things"),
@@ -279,7 +269,7 @@ async fn unimplemented_operations_answer_501() {
 
 #[actix_web::test]
 async fn unregistered_endpoint_is_404() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp =
         actix_test::call_service(&app, request(Method::GET, "/v2/Widgets").to_request()).await;
@@ -288,7 +278,7 @@ async fn unregistered_endpoint_is_404() {
 
 #[actix_web::test]
 async fn acceptable_media_types_are_served() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     for accept in [
         None,
@@ -318,7 +308,7 @@ async fn acceptable_media_types_are_served() {
 
 #[actix_web::test]
 async fn unacceptable_media_types_are_406_not_404() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     for accept in ["text/html", "application/xml", "text/plain, image/png"] {
         let resp = actix_test::call_service(
@@ -344,40 +334,80 @@ async fn unacceptable_media_types_are_406_not_404() {
     }
 }
 
+macro_rules! get_things {
+    ($app:expr, $authorization:expr) => {{
+        let authorization: Option<&str> = $authorization;
+        let mut req = request(Method::GET, "/v2/Things");
+        if let Some(authorization) = authorization {
+            req = req.insert_header((header::AUTHORIZATION, authorization));
+        }
+        actix_test::call_service(&$app, req.to_request())
+            .await
+            .status()
+    }};
+}
+
 #[actix_web::test]
 async fn bearer_token_is_enforced() {
+    let app = test_app!(thing_app().bearer_token(Some("s3cret".into())));
+
+    assert_eq!(get_things!(app, None), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        get_things!(app, Some("Bearer nope")),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(get_things!(app, Some("Bearer s3cret")), StatusCode::OK);
+}
+
+#[actix_web::test]
+async fn a_mount_without_a_token_refuses_one() {
+    let app = test_app!(thing_app());
+
+    assert_eq!(get_things!(app, None), StatusCode::OK);
+    for authorization in ["Bearer s3cret", "Basic aGk6dGhlcmU="] {
+        assert_eq!(
+            get_things!(app, Some(authorization)),
+            StatusCode::UNAUTHORIZED,
+            "{authorization} was not asked for"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn upstream_authentication_does_not_read_the_header() {
+    let app = test_app!(thing_app().authentication_handled_upstream(true));
+
+    for authorization in [
+        None,
+        Some("Bearer whatever-the-idp-issued"),
+        Some("Basic x"),
+    ] {
+        assert_eq!(
+            get_things!(app, authorization),
+            StatusCode::OK,
+            "Authorization: {authorization:?} is the host's business"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn a_token_wins_over_upstream_authentication() {
     let app = test_app!(
-        AppBuilder::new()
-            .register::<Thing, _>(ThingStore::default())
+        thing_app()
+            .authentication_handled_upstream(true)
             .bearer_token(Some("s3cret".into()))
     );
 
-    let unauthorized =
-        actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
-    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-
-    let wrong_token = actix_test::call_service(
-        &app,
-        request(Method::GET, "/v2/Things")
-            .insert_header((header::AUTHORIZATION, "Bearer nope"))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(wrong_token.status(), StatusCode::UNAUTHORIZED);
-
-    let authorized = actix_test::call_service(
-        &app,
-        request(Method::GET, "/v2/Things")
-            .insert_header((header::AUTHORIZATION, "Bearer s3cret"))
-            .to_request(),
-    )
-    .await;
-    assert_eq!(authorized.status(), StatusCode::OK);
+    assert_eq!(
+        get_things!(app, Some("Bearer nope")),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(get_things!(app, Some("Bearer s3cret")), StatusCode::OK);
 }
 
 #[actix_web::test]
 async fn unparseable_id_is_a_scim_bad_request() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp = actix_test::call_service(
         &app,
@@ -403,7 +433,7 @@ async fn unparseable_id_is_a_scim_bad_request() {
 
 #[actix_web::test]
 async fn malformed_payload_is_a_scim_bad_request() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp = actix_test::call_service(
         &app,
@@ -419,7 +449,7 @@ async fn malformed_payload_is_a_scim_bad_request() {
 
 #[actix_web::test]
 async fn patch_maps_val_to_200_and_empty_to_204() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let created: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -457,11 +487,11 @@ async fn patch_maps_val_to_200_and_empty_to_204() {
 
 #[actix_web::test]
 async fn discovery_is_derived_from_the_registry() {
-    let app = test_app!(
-        AppBuilder::new()
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new()
             .register::<User, _>(SilentUserService {})
             .register::<Thing, _>(ThingStore::default())
-    );
+    ));
 
     let types: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -510,6 +540,17 @@ async fn discovery_is_derived_from_the_registry() {
     .await;
     assert_eq!(user_schema["id"], User::SCHEMA);
     assert_eq!(user_schema["attributes"][0]["name"], "userName");
+    assert_eq!(
+        user_schema["meta"]["location"],
+        format!("/v2/Schemas/{}", User::SCHEMA)
+    );
+    for schema in schemas["Resources"].as_array().unwrap() {
+        assert_eq!(
+            schema["meta"]["location"],
+            format!("/v2/Schemas/{}", schema["id"].as_str().unwrap()),
+            "every served schema carries its location"
+        );
+    }
 
     let missing_schema = actix_test::call_service(
         &app,
@@ -541,7 +582,9 @@ impl ResourceService<User> for OneUserService {
 
 #[actix_web::test]
 async fn extensions_are_advertised_in_resource_types() {
-    let app = test_app!(AppBuilder::new().register::<User, _>(SilentUserService {}));
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<User, _>(SilentUserService {})
+    ));
 
     let user: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -567,7 +610,7 @@ async fn extensions_are_advertised_in_resource_types() {
     assert_eq!(extension["name"], "EnterpriseUser");
     assert_eq!(extension["attributes"][0]["name"], "employeeNumber");
 
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
     let thing: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
         request(Method::GET, "/v2/ResourceTypes/Thing").to_request(),
@@ -586,9 +629,11 @@ async fn present_extension_data_is_declared_in_schemas() {
         }),
         ..Default::default()
     };
-    let app = test_app!(AppBuilder::new().register::<User, _>(OneUserService {
-        user: Mutex::new(Some(carrying))
-    }));
+    let app = test_app!(AppBuilder::new(ScimBuilder::new().register::<User, _>(
+        OneUserService {
+            user: Mutex::new(Some(carrying))
+        }
+    )));
 
     let user: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -613,9 +658,11 @@ async fn absent_extension_data_is_not_declared() {
         id: Some("07756fc0-0000-4000-8000-000000000001".into()),
         ..Default::default()
     };
-    let app = test_app!(AppBuilder::new().register::<User, _>(OneUserService {
-        user: Mutex::new(Some(bare))
-    }));
+    let app = test_app!(AppBuilder::new(ScimBuilder::new().register::<User, _>(
+        OneUserService {
+            user: Mutex::new(Some(bare))
+        }
+    )));
 
     let user: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -653,7 +700,6 @@ fn builtin_schemas_are_well_formed() {
         (
             User::schema(),
             User::SCHEMA,
-            // RFC 7643 section 8.7.1, in order.
             &[
                 "userName",
                 "name",
@@ -687,10 +733,6 @@ fn builtin_schemas_are_well_formed() {
         assert_eq!(schema.id, urn);
         assert_eq!(schema.meta.resource_type.as_deref(), Some("Schema"));
         assert_eq!(
-            schema.meta.location.as_deref(),
-            Some(format!("/v2/Schemas/{urn}").as_str())
-        );
-        assert_eq!(
             schema
                 .attributes
                 .iter()
@@ -722,46 +764,9 @@ fn builtin_schemas_are_well_formed() {
     }
 }
 
-#[test]
-fn finalize_fills_only_the_meta_the_service_left_out() {
-    let id = Uuid::new_v4();
-
-    let mut thing = Thing {
-        id: Some(id),
-        ..Thing::new("bare")
-    };
-    finalize(&mut thing);
-    let meta = thing.meta.expect("meta was filled in");
-    assert_eq!(meta.resource_type.as_deref(), Some("Thing"));
-    assert_eq!(meta.location, Some(format!("/v2/Things/{id}")));
-
-    let mut thing = Thing {
-        id: Some(id),
-        meta: Some(Meta {
-            created: Some("2026-01-01T00:00:00Z".into()),
-            location: Some("https://example.test/custom".into()),
-            ..Default::default()
-        }),
-        ..Thing::new("opinionated")
-    };
-    finalize(&mut thing);
-    let meta = thing.meta.expect("meta survived");
-    assert_eq!(
-        meta.location.as_deref(),
-        Some("https://example.test/custom"),
-        "a location set by the service must not be overwritten"
-    );
-    assert_eq!(meta.created.as_deref(), Some("2026-01-01T00:00:00Z"));
-    assert_eq!(meta.resource_type.as_deref(), Some("Thing"));
-
-    let mut thing = Thing::new("unsaved");
-    finalize(&mut thing);
-    assert_eq!(thing.meta.expect("meta was filled in").location, None);
-}
-
 #[actix_web::test]
 async fn create_response_carries_generated_meta() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let created: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -782,7 +787,7 @@ async fn create_response_carries_generated_meta() {
 
 #[actix_web::test]
 async fn response_keys_keep_declaration_order() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let body = actix_test::call_and_read_body(
         &app,
@@ -831,7 +836,7 @@ macro_rules! seed {
 
 #[actix_web::test]
 async fn create_answers_201_with_a_location() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp = actix_test::call_service(
         &app,
@@ -859,7 +864,9 @@ async fn create_answers_201_with_a_location() {
 async fn search_reaches_the_same_list_as_get() {
     let store = ThingStore::default();
     let seen = store.seen.clone();
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<Thing, _>(store)
+    ));
     let _ = seed!(app, "first");
 
     let searched: serde_json::Value = actix_test::call_and_read_body_json(
@@ -883,7 +890,9 @@ async fn search_reaches_the_same_list_as_get() {
 async fn a_filter_survives_the_query_string_and_parses() {
     let store = ThingStore::default();
     let seen = store.seen.clone();
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<Thing, _>(store)
+    ));
     let _ = seed!(app, "first");
 
     let listed: serde_json::Value = actix_test::call_and_read_body_json(
@@ -915,7 +924,7 @@ async fn a_filter_survives_the_query_string_and_parses() {
 
 #[actix_web::test]
 async fn search_route_is_not_swallowed_by_the_id_route() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp = actix_test::call_service(
         &app,
@@ -935,11 +944,11 @@ async fn search_route_is_not_swallowed_by_the_id_route() {
 
 #[actix_web::test]
 async fn root_search_fans_out_across_resource_types() {
-    let app = test_app!(
-        AppBuilder::new()
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new()
             .register::<Thing, _>(ThingStore::default())
             .register::<User, _>(SilentUserService {})
-    );
+    ));
     let _ = seed!(app, "first");
     let _ = seed!(app, "second");
 
@@ -959,7 +968,9 @@ async fn root_search_fans_out_across_resource_types() {
 async fn pagination_passes_through_in_both_directions() {
     let store = ThingStore::default();
     let seen = store.seen.clone();
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(store));
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<Thing, _>(store)
+    ));
     let _ = seed!(app, "first");
     let _ = seed!(app, "second");
     let _ = seed!(app, "third");
@@ -986,9 +997,7 @@ async fn pagination_passes_through_in_both_directions() {
 }
 
 fn bulk_app_builder() -> AppBuilder {
-    AppBuilder::new()
-        .register::<Thing, _>(ThingStore::default())
-        .with_bulk(true, Some(10), None)
+    AppBuilder::new(thing_core().with_bulk(true, Some(10), None))
 }
 
 fn bulk_request(operations: serde_json::Value) -> serde_json::Value {
@@ -1000,7 +1009,7 @@ fn bulk_request(operations: serde_json::Value) -> serde_json::Value {
 
 #[actix_web::test]
 async fn bulk_is_501_until_enabled() {
-    let app = test_app!(AppBuilder::new().register::<Thing, _>(ThingStore::default()));
+    let app = test_app!(thing_app());
 
     let resp = actix_test::call_service(
         &app,
@@ -1156,11 +1165,7 @@ async fn bulk_fail_on_errors_stops_early() {
 
 #[actix_web::test]
 async fn bulk_beyond_max_operations_is_413() {
-    let app = test_app!(
-        AppBuilder::new()
-            .register::<Thing, _>(ThingStore::default())
-            .with_bulk(true, Some(1), None)
-    );
+    let app = test_app!(AppBuilder::new(thing_core().with_bulk(true, Some(1), None)));
 
     let resp = actix_test::call_service(
         &app,
@@ -1180,11 +1185,11 @@ async fn bulk_beyond_max_operations_is_413() {
 
 #[actix_web::test]
 async fn bulk_is_advertised_once_enabled() {
-    let app = test_app!(
-        AppBuilder::new()
-            .register::<Thing, _>(ThingStore::default())
-            .with_bulk(true, Some(50), Some(1_048_576))
-    );
+    let app = test_app!(AppBuilder::new(thing_core().with_bulk(
+        true,
+        Some(50),
+        Some(1_048_576)
+    )));
 
     let config: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -1196,286 +1201,347 @@ async fn bulk_is_advertised_once_enabled() {
     assert_eq!(config["bulk"]["maxPayloadSize"], 1_048_576);
 }
 
-mod metrics {
-    use super::{AppBuilder, Method, StatusCode, Thing, ThingStore, actix_test, header, request};
-    use crate::metrics::Metrics;
-
-    fn series<'a>(
-        gathered: &'a [prometheus::proto::MetricFamily],
-        family: &str,
-        labels: &[(&str, &str)],
-    ) -> Option<&'a prometheus::proto::Metric> {
-        gathered
-            .iter()
-            .find(|f| f.name() == family)?
-            .get_metric()
-            .iter()
-            .find(|metric| {
-                labels.iter().all(|(name, value)| {
-                    metric
-                        .get_label()
-                        .iter()
-                        .any(|label| label.name() == *name && label.value() == *value)
-                })
-            })
-    }
-
-    fn operations(
-        metrics: &Metrics,
-        resource_type: &str,
-        operation: &str,
-        source: &str,
-        outcome: &str,
-    ) -> u64 {
-        let gathered = metrics.registry().gather();
-        series(
-            &gathered,
-            "scimd_scim_operations_total",
-            &[
-                ("resource_type", resource_type),
-                ("operation", operation),
-                ("source", source),
-                ("outcome", outcome),
-            ],
-        )
-        .map_or(0, |metric| metric.get_counter().get_value() as u64)
-    }
-
-    fn http_endpoints(metrics: &Metrics) -> Vec<String> {
-        metrics
-            .registry()
-            .gather()
-            .iter()
-            .filter(|f| f.name() == "scimd_http_requests_total")
-            .flat_map(|f| f.get_metric())
-            .filter_map(|metric| {
-                metric
-                    .get_label()
+#[test]
+fn the_metrics_switch_and_registry_compose_in_either_order() {
+    for enabled in [true, false] {
+        let (first, second) = (crate::MetricsRegistry::new(), crate::MetricsRegistry::new());
+        for (app, registry, order) in [
+            (
+                thing_app()
+                    .metrics_registry(first.clone())
+                    .with_metrics(enabled)
+                    .build(),
+                &first,
+                "registry then switch",
+            ),
+            (
+                thing_app()
+                    .with_metrics(enabled)
+                    .metrics_registry(second.clone())
+                    .build(),
+                &second,
+                "switch then registry",
+            ),
+        ] {
+            assert_eq!(
+                app.metrics_registry().is_some(),
+                enabled,
+                "with_metrics({enabled}), {order}"
+            );
+            assert_eq!(
+                registry
+                    .gather()
                     .iter()
-                    .find(|label| label.name() == "endpoint")
-                    .map(|label| label.value().to_owned())
-            })
+                    .any(|f| f.name() == "scimd_registered_resource_types"),
+                enabled,
+                "with_metrics({enabled}), {order}: what the consumer's registry records"
+            );
+        }
+    }
+}
+
+mod authentication_schemes {
+    use super::{AppBuilder, Method, ScimBuilder, Thing, ThingStore, actix_test, header, request};
+    use crate::models::service_provider_config::AuthenticationScheme;
+
+    fn saml() -> AuthenticationScheme {
+        AuthenticationScheme {
+            r#type: "httpbasic".into(),
+            name: "The host's own scheme".into(),
+            description: None,
+            spec_uri: None,
+            documentation_uri: None,
+            primary: None,
+        }
+    }
+
+    async fn advertised(builder: AppBuilder, token: Option<&str>) -> Vec<String> {
+        let app = test_app!(builder);
+        let mut req = request(Method::GET, "/v2/ServiceProviderConfig");
+        if let Some(token) = token {
+            req = req.insert_header((header::AUTHORIZATION, format!("Bearer {token}")));
+        }
+        let config: serde_json::Value =
+            actix_test::call_and_read_body_json(&app, req.to_request()).await;
+        config["authenticationSchemes"]
+            .as_array()
+            .expect("a list of schemes")
+            .iter()
+            .map(|scheme| scheme["name"].as_str().expect("a named scheme").to_owned())
             .collect()
     }
 
-    fn thing_app() -> AppBuilder {
-        AppBuilder::new().register::<Thing, _>(ThingStore::default())
-    }
-
     #[actix_web::test]
-    async fn exposition_is_served_once_enabled() {
-        let (app, _metrics) = metrics_app!(thing_app());
-        actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
-
-        let resp = actix_test::call_service(
-            &app,
-            actix_test::TestRequest::get().uri("/metrics").to_request(),
+    async fn a_token_adds_bearer_without_dropping_what_the_host_advertised() {
+        let names = advertised(
+            AppBuilder::new(
+                ScimBuilder::new()
+                    .register::<Thing, _>(ThingStore::default())
+                    .advertise_authentication_scheme(saml()),
+            )
+            .bearer_token(Some("s3cret".to_owned())),
+            Some("s3cret"),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = String::from_utf8(actix_test::read_body(resp).await.to_vec())
-            .expect("the exposition is text");
         assert!(
-            body.contains("scimd_registered_resource_types 1"),
-            "the registry size is exposed: {body}"
+            names.iter().any(|n| n == "The host's own scheme"),
+            "the host's scheme survives, got {names:?}"
         );
         assert!(
-            body.contains("scimd_http_requests_total"),
-            "the HTTP metrics are exposed too: {body}"
+            names.iter().any(|n| n == "OAuth Bearer Token"),
+            "and bearer is advertised alongside it, got {names:?}"
         );
     }
 
     #[actix_web::test]
-    async fn exposition_is_reachable_with_a_trailing_slash() {
-        let (app, _metrics) = metrics_app!(thing_app());
-
-        let resp = actix_test::call_service(
-            &app,
-            actix_test::TestRequest::get().uri("/metrics/").to_request(),
+    async fn no_token_leaves_the_host_advertisement_alone() {
+        let names = advertised(
+            AppBuilder::new(
+                ScimBuilder::new()
+                    .register::<Thing, _>(ThingStore::default())
+                    .advertise_authentication_scheme(saml()),
+            )
+            .bearer_token(None),
+            None,
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(names, vec!["The host's own scheme".to_owned()]);
     }
+}
+
+mod mount {
+    use super::{
+        AppBuilder, Method, ScimBuilder, StatusCode, Thing, User, actix_test, header, request,
+        thing_core,
+    };
+    use crate::Resource as _;
 
     #[actix_web::test]
-    async fn nothing_is_served_or_recorded_until_enabled() {
-        let (app, metrics) = full_app!(thing_app(), false);
+    async fn a_custom_base_path_agrees_with_itself() {
+        let routes = AppBuilder::new(thing_core().base_path("/scim/v2"))
+            .build()
+            .configure();
+        let app = actix_test::init_service(actix_web::App::new().configure(routes)).await;
 
-        let resp = actix_test::call_service(
+        let created = actix_test::call_service(
             &app,
-            actix_test::TestRequest::get().uri("/metrics").to_request(),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        actix_test::call_service(
-            &app,
-            request(Method::POST, "/v2/Things")
-                .set_json(Thing::new("unwatched"))
+            request(Method::POST, "/scim/v2/Things")
+                .set_json(Thing::new("mounted"))
                 .to_request(),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let location = created
+            .headers()
+            .get(header::LOCATION)
+            .expect("a created resource says where it lives")
+            .to_str()
+            .expect("a text location")
+            .to_owned();
+        assert!(
+            location.starts_with("/scim/v2/Things/"),
+            "the Location header follows the base path, got {location}"
+        );
+
+        let body: serde_json::Value =
+            actix_test::call_and_read_body_json(&app, request(Method::GET, &location).to_request())
+                .await;
+        assert_eq!(
+            body["meta"]["location"], location,
+            "and so does meta.location"
+        );
+
+        let resource_type: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::GET, "/scim/v2/ResourceTypes/Thing").to_request(),
         )
         .await;
         assert_eq!(
-            operations(&metrics, "Thing", "create", "http", "success"),
-            0,
-            "a disabled server records nothing"
+            resource_type["meta"]["location"],
+            "/scim/v2/ResourceTypes/Thing"
         );
-    }
 
-    #[actix_web::test]
-    async fn a_scraper_needs_no_token_and_no_scim_accept() {
-        let (app, _metrics) = metrics_app!(thing_app().bearer_token(Some("secret".into())));
-
-        let resp = actix_test::call_service(
+        let schema: serde_json::Value = actix_test::call_and_read_body_json(
             &app,
-            actix_test::TestRequest::get()
-                .uri("/metrics")
-                .insert_header((header::ACCEPT, "text/plain;version=0.0.4,*/*;q=0.1"))
-                .to_request(),
+            request(Method::GET, &format!("/scim/v2/Schemas/{}", Thing::SCHEMA)).to_request(),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            schema["meta"]["location"],
+            format!("/scim/v2/Schemas/{}", Thing::SCHEMA)
+        );
+
+        let old =
+            actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
+        assert_eq!(old.status(), StatusCode::NOT_FOUND);
     }
 
     #[actix_web::test]
-    async fn operations_are_counted_per_resource_type_and_outcome() {
-        let (app, metrics) = metrics_app!(thing_app());
+    async fn mounting_inside_a_host_scope_does_not_disturb_it() {
+        let routes = AppBuilder::new(thing_core().location_base("/scim/v2"))
+            .bearer_token(Some("s3cret".to_owned()))
+            .build()
+            .configure();
+        let app = actix_test::init_service(
+            actix_web::App::new()
+                .route(
+                    "/host",
+                    actix_web::web::get().to(|| async { "the host's own route" }),
+                )
+                .service(actix_web::web::scope("/scim").configure(routes)),
+        )
+        .await;
+
+        let host = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/host").to_request(),
+        )
+        .await;
+        assert_eq!(
+            host.status(),
+            StatusCode::OK,
+            "scimd's auth and content negotiation are scope-local"
+        );
 
         let created: serde_json::Value = actix_test::call_and_read_body_json(
             &app,
-            request(Method::POST, "/v2/Things")
-                .set_json(Thing::new("counted"))
+            request(Method::POST, "/scim/v2/Things")
+                .insert_header((header::AUTHORIZATION, "Bearer s3cret"))
+                .set_json(Thing::new("nested"))
                 .to_request(),
         )
         .await;
-        let id = created["id"].as_str().expect("created thing has an id");
-
-        actix_test::call_service(
-            &app,
-            request(Method::GET, &format!("/v2/Things/{id}")).to_request(),
-        )
-        .await;
-        actix_test::call_service(
-            &app,
-            request(
-                Method::GET,
-                "/v2/Things/00000000-0000-0000-0000-000000000000",
-            )
-            .to_request(),
-        )
-        .await;
-
-        assert_eq!(
-            operations(&metrics, "Thing", "create", "http", "success"),
-            1
+        let location = created["meta"]["location"]
+            .as_str()
+            .expect("a location")
+            .to_owned();
+        assert!(
+            location.starts_with("/scim/v2/Things/"),
+            "meta.location includes the host's prefix, got {location}"
         );
-        assert_eq!(operations(&metrics, "Thing", "get", "http", "success"), 1);
-        assert_eq!(
-            operations(&metrics, "Thing", "get", "http", "not_found"),
-            1,
-            "a miss is counted apart from a hit"
-        );
-    }
 
-    #[actix_web::test]
-    async fn unimplemented_operations_are_counted_as_such() {
-        let (app, metrics) =
-            metrics_app!(AppBuilder::new().register::<Thing, _>(super::SilentService {}));
-
-        let resp =
-            actix_test::call_service(&app, request(Method::GET, "/v2/Things").to_request()).await;
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
-
-        assert_eq!(
-            operations(&metrics, "Thing", "list", "http", "not_implemented"),
-            1
-        );
-        assert_eq!(operations(&metrics, "Thing", "list", "http", "success"), 0);
-    }
-
-    #[actix_web::test]
-    async fn bulk_sub_operations_are_counted_apart_from_http_ones() {
-        let (app, metrics) = metrics_app!(thing_app().with_bulk(true, Some(10), None));
-
-        let resp = actix_test::call_service(
+        let fetched = actix_test::call_service(
             &app,
-            request(Method::POST, "/v2/Bulk")
-                .set_json(super::bulk_request(serde_json::json!([
-                    {"method": "POST", "path": "/Things",
-                     "data": {"schemas": [<Thing as crate::Resource>::SCHEMA], "displayName": "one"}},
-                    {"method": "POST", "path": "/Things",
-                     "data": {"schemas": [<Thing as crate::Resource>::SCHEMA], "displayName": "two"}},
-                    {"method": "DELETE", "path": "/Things/00000000-0000-0000-0000-000000000000"},
-                ])))
+            request(Method::GET, &location)
+                .insert_header((header::AUTHORIZATION, "Bearer s3cret"))
                 .to_request(),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
         assert_eq!(
-            operations(&metrics, "Thing", "create", "bulk", "success"),
-            2
+            fetched.status(),
+            StatusCode::OK,
+            "and the location it published is one a client can actually GET"
         );
-        assert_eq!(
-            operations(&metrics, "Thing", "delete", "bulk", "not_found"),
-            1,
-            "a failing operation inside a batch is visible"
-        );
-        assert_eq!(
-            operations(&metrics, "Thing", "create", "http", "success"),
-            0,
-            "and does not blur into the ones the routes serve"
-        );
-
-        let gathered = metrics.registry().gather();
-        let batches = series(&gathered, "scimd_bulk_operations_per_request", &[])
-            .expect("the batch size was observed")
-            .get_histogram();
-        assert_eq!(batches.get_sample_count(), 1, "one batch");
-        assert_eq!(batches.get_sample_sum(), 3.0, "carrying three operations");
     }
 
     #[actix_web::test]
-    async fn http_series_are_keyed_by_route_pattern_not_path() {
-        let (app, metrics) = metrics_app!(thing_app());
+    async fn two_mounts_do_not_collide() {
+        let things = AppBuilder::new(thing_core().base_path("/things/v2"))
+            .build()
+            .configure();
+        let users = AppBuilder::new(
+            ScimBuilder::new()
+                .register::<User, _>(super::SilentUserService {})
+                .base_path("/users/v2"),
+        )
+        .build()
+        .configure();
+        let app =
+            actix_test::init_service(actix_web::App::new().configure(things).configure(users))
+                .await;
 
-        for id in [
-            "11111111-1111-1111-1111-111111111111",
-            "22222222-2222-2222-2222-222222222222",
-        ] {
-            actix_test::call_service(
-                &app,
-                request(Method::GET, &format!("/v2/Things/{id}")).to_request(),
-            )
-            .await;
+        let listed: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::GET, "/things/v2/ResourceTypes").to_request(),
+        )
+        .await;
+        assert_eq!(listed["totalResults"], 1);
+        assert_eq!(listed["Resources"][0]["id"], "Thing");
+
+        let other: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::GET, "/users/v2/ResourceTypes").to_request(),
+        )
+        .await;
+        assert_eq!(other["totalResults"], 1);
+        assert_eq!(other["Resources"][0]["id"], "User");
+
+        let crossed =
+            actix_test::call_service(&app, request(Method::GET, "/things/v2/Users").to_request())
+                .await;
+        assert_eq!(crossed.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn two_mounts_can_share_one_metrics_registry() {
+        let shared = crate::MetricsRegistry::new();
+        let things = AppBuilder::new(thing_core().base_path("/things/v2"))
+            .metrics_registry(shared.clone())
+            .build()
+            .configure();
+        let users = AppBuilder::new(
+            ScimBuilder::new()
+                .register::<User, _>(super::SilentUserService {})
+                .base_path("/users/v2"),
+        )
+        .metrics_registry(shared.clone())
+        .build()
+        .configure();
+        let app =
+            actix_test::init_service(actix_web::App::new().configure(things).configure(users))
+                .await;
+
+        for path in ["/things/v2/ResourceTypes", "/users/v2/ResourceTypes"] {
+            let resp =
+                actix_test::call_service(&app, request(Method::GET, path).to_request()).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "{path} is served despite the shared registry"
+            );
         }
-
-        let endpoints = http_endpoints(&metrics);
-        assert!(
-            endpoints.contains(&"/v2/Things/{id}".to_owned()),
-            "the pattern is what is recorded: {endpoints:?}"
-        );
-        assert!(
-            !endpoints.iter().any(|e| e.contains("1111")),
-            "no series carries a concrete id: {endpoints:?}"
-        );
     }
 
     #[actix_web::test]
-    async fn health_checks_are_not_counted() {
-        let (app, metrics) = metrics_app!(thing_app());
+    async fn a_mounted_scope_answers_its_own_404() {
+        let routes = AppBuilder::new(thing_core()).build().configure();
+        let app =
+            actix_test::init_service(actix_web::App::new().configure(routes).default_service(
+                actix_web::web::to(|| async {
+                    actix_web::HttpResponse::NotFound().body("<html>the host's 404</html>")
+                }),
+            ))
+            .await;
 
-        let resp = actix_test::call_service(
+        let inside =
+            actix_test::call_service(&app, request(Method::GET, "/v2/Widgets").to_request()).await;
+        assert_eq!(inside.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            inside
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/scim+json"),
+            "a miss inside the scope is a SCIM error, not the host's page"
+        );
+        let body: serde_json::Value = actix_test::read_body_json(inside).await;
+        assert_eq!(
+            body["schemas"][0],
+            "urn:ietf:params:scim:api:messages:2.0:Error"
+        );
+        assert_eq!(body["status"], "404");
+
+        let outside = actix_test::call_service(
             &app,
-            actix_test::TestRequest::get().uri("/health").to_request(),
+            actix_test::TestRequest::get()
+                .uri("/elsewhere")
+                .to_request(),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        assert!(
-            !http_endpoints(&metrics).contains(&"/health".to_owned()),
-            "health checks stay out of the HTTP metrics"
+        assert_eq!(outside.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            actix_test::read_body(outside).await,
+            "<html>the host's 404</html>"
         );
     }
 }

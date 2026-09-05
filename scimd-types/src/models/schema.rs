@@ -16,6 +16,10 @@ pub struct Schema {
 }
 
 impl Schema {
+    /// `meta.location` is deliberately left unset: a schema is written by the resource type that
+    /// declares it, inside a no-argument [`crate::Resource::schema`], which cannot know what base
+    /// path the server it will be served from answers on. The server stamps it with
+    /// [`Schema::at_base`] instead.
     pub fn new(id: &str, name: &str, description: &str, attributes: Vec<Attributes>) -> Self {
         Self {
             id: id.into(),
@@ -24,10 +28,16 @@ impl Schema {
             attributes,
             meta: Meta {
                 resource_type: Some("Schema".into()),
-                location: Some(format!("{}/Schemas/{id}", crate::SCIM_BASE_PATH)),
                 ..Default::default()
             },
         }
+    }
+
+    /// Points `meta.location` at this schema on a server serving `/Schemas` under `base`.
+    #[must_use]
+    pub fn at_base(mut self, base: &str) -> Self {
+        self.meta.location = Some(format!("{base}/Schemas/{}", self.id));
+        self
     }
 }
 

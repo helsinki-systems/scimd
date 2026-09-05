@@ -6,28 +6,18 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-actix-web = { workspace = true, default-features = false, features = [ "macros"] }
-actix-web-prom = { workspace = true, default-features = false }
-anyhow.workspace = true
+actix-web.workspace = true
 async-trait.workspace = true
-clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
-nom.workspace = true
-prometheus = { workspace = true, default-features = false }
-sd-notify.workspace = true
+prometheus.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["full"] }
-
-fs-err.workspace = true
-toml.workspace = true
-
-tracing-actix-web.workspace = true
-tracing-log.workspace = true
-tracing-subscriber = { workspace = true, features = ["registry", "env-filter"] }
 tracing.workspace = true
 
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["preserve_order"] }
+scimd-core.workspace = true
+scimd-types.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }

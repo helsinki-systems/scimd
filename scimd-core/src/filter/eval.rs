@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use super::{AttrPath, CompareOp, CompareValue, Filter};
 
-pub(super) fn matches(filter: &Filter, resource: &Value) -> bool {
+pub(crate) fn matches(filter: &Filter, resource: &Value) -> bool {
     match filter {
         Filter::And(left, right) => matches(left, resource) && matches(right, resource),
         Filter::Or(left, right) => matches(left, resource) || matches(right, resource),

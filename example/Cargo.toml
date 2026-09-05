@@ -8,9 +8,10 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 dotenvy.workspace = true
-serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["full"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }
 
-scimd = { path = "../scimd" }
+scimd.workspace = true
+scimd-server.workspace = true

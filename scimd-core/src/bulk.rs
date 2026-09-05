@@ -1,19 +1,17 @@
 //! The `/Bulk` executor (RFC 7644 section 3.7).
 //!
-//! Bulk is dispatch over the handler registry, so it drives exactly the same
-//! [`crate::resource::ErasedHandler`] methods the individual routes do and needs nothing new from
-//! them. What lives here is the batch's own state: the `bulkId` map, the failure count, and the
-//! per-operation result documents.
+//! Bulk drives the same `ErasedHandler` methods the individual routes do; what lives here is the
+//! batch's own state: the `bulkId` map, the failure count, and the per-operation result documents.
 
 use std::collections::HashMap;
 
-use actix_web::ResponseError as _;
-use actix_web::http::StatusCode;
 use serde_json::Value;
 
+use scimd_types::models::{BulkOperation, BulkOperationResult, BulkRequest, BulkResponse};
+use scimd_types::{Error, Result, StatusCode};
+
+use crate::Scim;
 use crate::metrics::{Operation, Source};
-use crate::models::{BulkOperation, BulkOperationResult, BulkRequest, BulkResponse};
-use crate::{Error, Result, State};
 
 /// `bulkId` references appear as `bulkId:<key>`, either as a whole value or embedded in a `$ref`
 /// such as `../Users/bulkId:qwerty`.
@@ -35,7 +33,8 @@ fn split_path(path: &str) -> Option<(&str, Option<&str>)> {
     }
 }
 
-/// Where a `bulkId:` key ends: at a path separator, a quote, or the end of the string.
+/// Rewrites every `bulkId:<key>` in `text`. A key ends at a path separator, a quote, or the end of
+/// the string.
 fn resolve_references(text: &str, ids: &HashMap<String, String>) -> Result<String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -82,8 +81,6 @@ fn resolve_in_value(value: &mut Value, ids: &HashMap<String, String>) -> Result<
     Ok(())
 }
 
-/// What one operation produced when it succeeded: the status to report, where the resource lives,
-/// and its id if it created one.
 struct Applied {
     status: StatusCode,
     location: Option<String>,
@@ -107,33 +104,31 @@ fn id_of(resource: &Value) -> Option<String> {
     }
 }
 
-async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) -> Result<Applied> {
-    let (endpoint, id) = split_path(&operation.path)
-        .ok_or_else(|| Error::BadRequest(format!("'{}' is not a resource path", operation.path)))?;
-    let handler = state
+async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Result<Applied> {
+    let (endpoint, id) = split_path(path)
+        .ok_or_else(|| Error::BadRequest(format!("'{path}' is not a resource path")))?;
+    // Not `Scim::handler`: a batch names its own paths, so an endpoint that does not exist is the
+    // client's mistake and a 404, where a route that lost its handler would be our bug and a 500.
+    let handler = scim
         .handlers
         .get(endpoint)
         .cloned()
-        .ok_or_else(|| Error::NotFound(operation.path.clone()))?;
+        .ok_or_else(|| Error::NotFound(path.to_owned()))?;
 
     let body = || {
-        data.clone().ok_or_else(|| {
-            Error::BadRequest(format!(
-                "{} {} requires data",
-                operation.method, operation.path
-            ))
-        })
+        data.clone()
+            .ok_or_else(|| Error::BadRequest(format!("{method} {path} requires data")))
     };
 
     let resource_type = handler.resource_type();
-    match (operation.method.to_ascii_uppercase().as_str(), id) {
+    match (method.to_ascii_uppercase().as_str(), id) {
         ("POST", None) => {
-            let created = state
+            let created = scim
                 .observe(
                     resource_type,
                     Operation::Create,
                     Source::Bulk,
-                    handler.create(body()?),
+                    handler.create(scim.base(), body()?),
                 )
                 .await?;
             Ok(Applied {
@@ -143,12 +138,12 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
             })
         }
         ("PUT", Some(id)) => {
-            let replaced = state
+            let replaced = scim
                 .observe(
                     resource_type,
                     Operation::Replace,
                     Source::Bulk,
-                    handler.replace(id, body()?),
+                    handler.replace(scim.base(), id, body()?),
                 )
                 .await?;
             Ok(Applied {
@@ -160,12 +155,12 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
         ("PATCH", Some(id)) => {
             let op = serde_json::from_value(body()?)
                 .map_err(|e| Error::BadRequest(format!("invalid PatchOp: {e}")))?;
-            let patched = state
+            let patched = scim
                 .observe(
                     resource_type,
                     Operation::Patch,
                     Source::Bulk,
-                    handler.patch(id, op),
+                    handler.patch(scim.base(), id, op),
                 )
                 .await?;
             match patched {
@@ -182,14 +177,13 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
             }
         }
         ("DELETE", Some(id)) => {
-            state
-                .observe(
-                    resource_type,
-                    Operation::Delete,
-                    Source::Bulk,
-                    handler.delete(id),
-                )
-                .await?;
+            scim.observe(
+                resource_type,
+                Operation::Delete,
+                Source::Bulk,
+                handler.delete(id),
+            )
+            .await?;
             Ok(Applied {
                 status: StatusCode::NO_CONTENT,
                 location: None,
@@ -197,8 +191,7 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
             })
         }
         (method, _) => Err(Error::BadRequest(format!(
-            "{method} is not valid against '{}'",
-            operation.path
+            "{method} is not valid against '{path}'"
         ))),
     }
 }
@@ -206,8 +199,8 @@ async fn apply(state: &State, operation: &BulkOperation, data: Option<Value>) ->
 /// Runs a batch. Operations are applied in the order given and a failing one never aborts the
 /// rest - it is reported with its own status and error document - unless `failOnErrors` says
 /// otherwise.
-pub(crate) async fn execute(state: &State, request: BulkRequest) -> Result<BulkResponse> {
-    if let Some(max) = state.bulk_settings.max_operations
+pub(crate) async fn execute(scim: &Scim, request: BulkRequest) -> Result<BulkResponse> {
+    if let Some(max) = scim.config().bulk().max_operations
         && request.operations.len() > max as usize
     {
         return Err(Error::PayloadTooLarge(format!(
@@ -215,7 +208,7 @@ pub(crate) async fn execute(state: &State, request: BulkRequest) -> Result<BulkR
             request.operations.len()
         )));
     }
-    state.observe_bulk_size(request.operations.len());
+    scim.observe_bulk_size(request.operations.len());
 
     // bulkId -> the id the POST actually got. Sequential: an operation can only reference a
     // bulkId defined by an operation before it.
@@ -224,14 +217,14 @@ pub(crate) async fn execute(state: &State, request: BulkRequest) -> Result<BulkR
     let mut failures = 0;
 
     for operation in &request.operations {
-        let outcome = resolve_operation(state, operation, &ids).await;
+        let outcome = resolve_operation(scim, operation, &ids).await;
 
         let result = BulkOperationResult::new(
             &operation.method,
             operation.bulk_id.clone(),
             match &outcome {
                 Ok(applied) => applied.status,
-                Err(e) => e.status_code(),
+                Err(e) => e.status(),
             },
         );
 
@@ -268,18 +261,11 @@ pub(crate) async fn execute(state: &State, request: BulkRequest) -> Result<BulkR
 /// Substitution has to happen per operation rather than up front, because the map only fills in as
 /// earlier operations complete.
 async fn resolve_operation(
-    state: &State,
+    scim: &Scim,
     operation: &BulkOperation,
     ids: &HashMap<String, String>,
 ) -> Result<Applied> {
-    let mut resolved = BulkOperation {
-        method: operation.method.clone(),
-        path: resolve_references(&operation.path, ids)?,
-        bulk_id: operation.bulk_id.clone(),
-        version: operation.version.clone(),
-        data: None,
-    };
-
+    let path = resolve_references(&operation.path, ids)?;
     let data = match operation.data.clone() {
         Some(mut data) => {
             resolve_in_value(&mut data, ids)?;
@@ -287,9 +273,8 @@ async fn resolve_operation(
         }
         None => None,
     };
-    resolved.data = data.clone();
 
-    apply(state, &resolved, data).await
+    apply(scim, &operation.method, &path, data).await
 }
 
 #[cfg(test)]

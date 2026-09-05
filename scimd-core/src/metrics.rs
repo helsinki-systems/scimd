@@ -1,38 +1,23 @@
-//! Prometheus instrumentation, exposed at `GET /metrics`.
+//! The SCIM layer's Prometheus instrumentation: one observation per resource operation.
 //!
-//! Two layers are recorded, because neither can be derived from the other:
-//!
-//! - **HTTP**, by `actix-web-prom`: count and duration per route, method and status. The `endpoint`
-//!   label is the *matched route pattern* - `/v2/Users/{id}`, never the concrete path.
-//! - **SCIM**, by this module: one observation per resource operation. `POST /Bulk` is a single
-//!   HTTP request that performs any number of operations, and a root `POST /.search` fans out
-//!   across every registered resource type and skips the ones that answer `MethodNotImplemented`;
-//!   in both cases the HTTP layer sees one request and cannot report what actually happened
-//!   underneath it.
-//!
-//! Every label here draws from a closed set - the registered resource types, the seven operations,
-//! the two sources, the error variants.
+//! Deliberately not the HTTP layer's. `POST /Bulk` is a single HTTP request that performs any
+//! number of operations, and a root `POST /.search` fans out across every registered resource type,
+//! so an HTTP-level counter sees one request and cannot report what happened underneath it. An
+//! adapter that also wants per-route HTTP metrics adds them itself.
 
 use std::time::Instant;
 
-use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
 use prometheus::{Histogram, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry};
-
-use crate::Result;
+use scimd_types::Result;
 
 const NAMESPACE: &str = "scimd";
-
-pub(crate) const ENDPOINT: &str = "/metrics";
-
-/// What the `endpoint` label becomes for a request that matched no route. Without this every
-/// bot-probed path on the internet would be its own series.
-const UNMATCHED: &str = "UNKNOWN";
 
 /// `/Bulk` batch sizes. Bounded above by `maxOperations`, which RFC 7644 lets a provider set
 /// anywhere, so the top bucket is generous.
 const BULK_SIZE_BUCKETS: &[f64] = &[1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0];
 
-/// Which of a resource endpoint's operations was invoked.
+const SUCCESS: &str = "success";
+
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     List,
@@ -73,29 +58,21 @@ impl Source {
     }
 }
 
-const SUCCESS: &str = "success";
-
-pub(crate) struct Metrics {
-    prom: PrometheusMetrics,
+pub struct ScimMetrics {
     operations: IntCounterVec,
     duration: HistogramVec,
     bulk_size: Histogram,
     resource_types: IntGauge,
 }
 
-impl Metrics {
-    pub(crate) fn new(registry: Option<Registry>) -> anyhow::Result<Self> {
-        let mut builder = PrometheusMetricsBuilder::new(NAMESPACE)
-            .endpoint(ENDPOINT)
-            .exclude("/health")
-            .mask_unmatched_patterns(UNMATCHED);
-        if let Some(registry) = registry {
-            builder = builder.registry(registry);
-        }
-        let prom = builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("could not set up the HTTP metrics: {e}"))?;
-
+impl ScimMetrics {
+    /// The registry is the caller's: a host serves it from wherever it already serves Prometheus.
+    /// One registry can therefore back only one [`ScimMetrics`].
+    ///
+    /// # Errors
+    ///
+    /// If a collector cannot be built, or is already registered in `registry`.
+    pub fn new(registry: &Registry) -> anyhow::Result<Self> {
         let operations = IntCounterVec::new(
             Opts::new(
                 "scim_operations_total",
@@ -128,13 +105,12 @@ impl Metrics {
             .namespace(NAMESPACE),
         )?;
 
-        prom.registry.register(Box::new(operations.clone()))?;
-        prom.registry.register(Box::new(duration.clone()))?;
-        prom.registry.register(Box::new(bulk_size.clone()))?;
-        prom.registry.register(Box::new(resource_types.clone()))?;
+        registry.register(Box::new(operations.clone()))?;
+        registry.register(Box::new(duration.clone()))?;
+        registry.register(Box::new(bulk_size.clone()))?;
+        registry.register(Box::new(resource_types.clone()))?;
 
         Ok(Self {
-            prom,
             operations,
             duration,
             bulk_size,
@@ -142,19 +118,7 @@ impl Metrics {
         })
     }
 
-    pub(crate) fn middleware(&self) -> PrometheusMetrics {
-        self.prom.clone()
-    }
-
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the tests read metrics back")
-    )]
-    pub(crate) fn registry(&self) -> &Registry {
-        &self.prom.registry
-    }
-
-    pub(crate) fn set_resource_types(&self, count: usize) {
+    pub fn set_resource_types(&self, count: usize) {
         self.resource_types.set(count as i64);
     }
 
@@ -179,9 +143,8 @@ impl Metrics {
     }
 }
 
-/// Times `call` and records what it answered.
 pub(crate) async fn observe<T>(
-    metrics: Option<&Metrics>,
+    metrics: Option<&ScimMetrics>,
     resource_type: &str,
     operation: Operation,
     source: Source,

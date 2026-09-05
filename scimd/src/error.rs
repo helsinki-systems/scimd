@@ -1,106 +1,63 @@
-use actix_web::{HttpResponse, ResponseError, http::StatusCode, http::header};
+//! [`scimd_types::Error`] as an actix-web error.
+//!
+//! [`Error`] is what a [`crate::ResourceService`] returns, so it has to hold for a backend that is
+//! not actix-web; the orphan rule then makes the newtype the only way to give it `ResponseError`.
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("an unspecified internal error occurred: {0}")]
-    InternalError(#[from] anyhow::Error),
+// The one place in the workspace that sees both `StatusCode` types - actix-web 4 is on http 0.2
+// while the SCIM layer is on http 1 - so both are named explicitly.
+use actix_web::http::StatusCode as ActixStatus;
+use actix_web::{HttpResponse, ResponseError, http::header};
 
-    #[error("Method not implemented")]
-    MethodNotImplemented,
+use scimd_core::headers::SCIM_MEDIA_TYPE;
+pub use scimd_types::{Error, Result};
 
-    #[error("Conflict")]
-    Conflict,
+/// [`Error`] on its way out over HTTP. `?` converts into it.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct ScimError(#[from] pub Error);
 
-    #[error("Unauthorized")]
-    Unauthorized,
-
-    // RFC 7643 defines `id` as opaque and each resource type chooses its own `Resource::Id`
-    #[error("Resource {0} not found")]
-    NotFound(String),
-
-    #[error("Bad request. Details={0}")]
-    BadRequest(String),
-
-    #[error("Invalid value. Details={0}")]
-    InvalidValue(String),
-
-    #[error("Invalid filter. Details={0}")]
-    InvalidFilter(String),
-
-    #[error("Payload too large. Details={0}")]
-    PayloadTooLarge(String),
-
-    #[error("Not acceptable. Details={0}")]
-    NotAcceptable(String),
-}
-
-impl Error {
-    pub(crate) fn get_detail(&self) -> Option<String> {
-        match &self {
-            Self::InternalError(_) | Self::Unauthorized => None,
-            Self::BadRequest(v)
-            | Self::InvalidValue(v)
-            | Self::InvalidFilter(v)
-            | Self::PayloadTooLarge(v)
-            | Self::NotAcceptable(v) => Some(v.to_owned()),
-            _ => Some(self.to_string()),
-        }
-    }
-
-    /// The variant's name as a metrics label.
-    pub(crate) fn kind(&self) -> &'static str {
-        match &self {
-            Self::InternalError(_) => "internal_error",
-            Self::MethodNotImplemented => "not_implemented",
-            Self::Conflict => "conflict",
-            Self::Unauthorized => "unauthorized",
-            Self::NotFound(_) => "not_found",
-            Self::BadRequest(_) => "bad_request",
-            Self::InvalidValue(_) => "invalid_value",
-            Self::InvalidFilter(_) => "invalid_filter",
-            Self::PayloadTooLarge(_) => "too_large",
-            Self::NotAcceptable(_) => "not_acceptable",
-        }
-    }
-
-    pub(crate) fn scim_type(&self) -> Option<&'static str> {
-        match &self {
-            Self::InvalidValue(_) => Some("invalidValue"),
-            Self::InvalidFilter(_) => Some("invalidFilter"),
-            Self::PayloadTooLarge(_) => Some("tooLarge"),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn to_scim_error(&self) -> crate::models::Error {
-        crate::models::Error::new(self.status_code())
-            .with_scim_type(self.scim_type())
-            .with_detail(self.get_detail())
-    }
-}
-
-impl ResponseError for Error {
-    fn status_code(&self) -> StatusCode {
-        match &self {
-            Self::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::MethodNotImplemented => StatusCode::NOT_IMPLEMENTED,
-            Self::Conflict => StatusCode::CONFLICT,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) | Self::InvalidValue(_) | Self::InvalidFilter(_) => {
-                StatusCode::BAD_REQUEST
-            }
-            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::NotAcceptable(_) => StatusCode::NOT_ACCEPTABLE,
-        }
+impl ResponseError for ScimError {
+    fn status_code(&self) -> ActixStatus {
+        // The status crosses between the two `http` versions as a number. It cannot fail - a
+        // `StatusCode` only ever holds 100..=999, which is exactly what `from_u16` accepts - and
+        // `every_status_survives_the_crossing` below pins that.
+        ActixStatus::from_u16(self.0.status().as_u16())
+            .unwrap_or(ActixStatus::INTERNAL_SERVER_ERROR)
     }
 
     fn error_response(&self) -> HttpResponse {
         HttpResponse::build(self.status_code())
-            .append_header((header::CONTENT_TYPE, "application/scim+json"))
-            .json(self.to_scim_error())
+            .append_header((header::CONTENT_TYPE, SCIM_MEDIA_TYPE))
+            .json(self.0.to_scim_error())
     }
 }
 
-// Short hand alias, which allows you to use just Result<T>
-pub type Result<T> = std::result::Result<T, Error>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_status_survives_the_crossing() {
+        let all = [
+            Error::InternalError(anyhow::anyhow!("boom")),
+            Error::MethodNotImplemented,
+            Error::Conflict,
+            Error::Unauthorized,
+            Error::NotFound(String::new()),
+            Error::BadRequest(String::new()),
+            Error::InvalidValue(String::new()),
+            Error::InvalidFilter(String::new()),
+            Error::PayloadTooLarge(String::new()),
+            Error::NotAcceptable(String::new()),
+        ];
+        for error in all {
+            let expected = error.status().as_u16();
+            let display = error.to_string();
+            assert_eq!(
+                ScimError::from(error).status_code().as_u16(),
+                expected,
+                "'{display}' answers {expected}, which did not survive into actix's StatusCode"
+            );
+        }
+    }
+}

@@ -2,7 +2,7 @@ use super::meta::Meta;
 use super::schema::Schema;
 use crate::Resource;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Group {
     pub schemas: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +54,7 @@ impl Default for Group {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone)]
 pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,

@@ -684,9 +684,24 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "scimd",
+ "scimd-server",
  "serde",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "example-mounted"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "scimd",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -863,10 +878,10 @@ dependencies = [
  "gitlab",
  "http 1.5.0",
  "scimd",
+ "scimd-server",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -1901,25 +1916,65 @@ name = "scimd"
 version = "0.1.0"
 dependencies = [
  "actix-web",
- "actix-web-prom",
  "anyhow",
  "async-trait",
- "clap",
- "fs-err",
  "futures-util",
- "nom",
  "prometheus",
- "sd-notify",
+ "scimd-core",
+ "scimd-types",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "scimd-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nom",
+ "prometheus",
+ "scimd-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scimd-server"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "actix-web-prom",
+ "anyhow",
+ "clap",
+ "fs-err",
+ "prometheus",
+ "scimd",
+ "sd-notify",
+ "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
  "tracing-actix-web",
  "tracing-log",
  "tracing-subscriber",
- "uuid",
+]
+
+[[package]]
+name = "scimd-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "http 1.5.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
