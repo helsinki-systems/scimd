@@ -200,12 +200,53 @@ Every label draws from a closed set, so nothing a client sends can create a time
 is the matched route pattern (`/v2/Users/{id}`, never a concrete id) and paths matching no route at
 all collapse into `UNKNOWN`. `/health` is excluded.
 
+## kimaid
+
+A sidecar that puts SCIM in front of [Kimai](https://www.kimai.org/), talking to it over Kimai's
+own REST API (`kimai-openapi.json`). SCIM `/Users` are Kimai users and SCIM `/Groups` are Kimai
+teams.
+
+```
+KIMAI_URL=https://kimai.example.com \
+KIMAI_API_TOKEN=... \
+SERVICE_BEARER_TOKEN=... \
+  cargo run -p kimaid -- --bind 127.0.0.1:5001
+```
+
+Secrets are environment variables because `scimd_server::load_config` logs the config file it
+read. `config.toml` carries only what Kimai requires of every user and SCIM need not send:
+
+```toml
+language = "de"          # Kimai's `language` enum
+locale = "de_DE"         # Kimai's `locale` enum, regions spelled with an underscore
+timezone = "Europe/Berlin"
+```
+
+A SCIM `id` is the Kimai id it names, so `/v2/Users/42` is Kimai's user 42. Kimai has nowhere to
+keep an `externalId`, so kimaid accepts one and drops it. A client that lost its mapping
+re-correlates with `?filter=userName eq "..."`.
+
+Two limits come from Kimai's API, and the client sees both:
+
+- **A user cannot be deleted.** Kimai has no such endpoint, and a time-tracking system should keep
+  the timesheets attached to an account, so `DELETE /Users/{id}` deactivates. `active: false` does
+  the same, so both deprovisioning routes agree.
+- **A user cannot be renamed.** Kimai's user edit form has no `username`, so a `userName` change
+  draws a `400 invalidValue` instead of being dropped without a word.
+
+kimaid never writes Kimai roles. Sending `roles` replaces a user's entire role list, and the valid
+values differ per instance, so omitting the field leaves Kimai's own roles alone.
+
+Neither Kimai collection endpoint pages or filters, so kimaid fetches both whole and narrows them
+itself. `filter` matches exactly, and `startIndex`/`count` slice what is left.
+
 ## Directory structure
 
 ```
 example/         # bin example: the standalone server
 example-mounted/ # bin example: scimd mounted into a host's own app, on `scimd` alone
 gitlabd/         # microservice that creates users in gitlab on request
+kimaid/          # microservice that provisions users and teams into kimai
 scimd/           # the actix-web adapter: routes, middleware, App/AppBuilder/configure
 scimd-core/      # Scim: the registry, dispatch, /Bulk, discovery, filters and SCIM metrics
 scimd-server/    # the daemon: sockets, signals, --flags, config file, logging, /health, /metrics
