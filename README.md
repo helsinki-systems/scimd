@@ -149,25 +149,30 @@ Underneath, `scimd::filter::parse` turns the string into a `Filter` - the RFC 76
 grammar, all of it, `valuePath` brackets included - and `Filter::matches_resource` matches one
 against a resource. Parsing is the service's call rather than scimd's, because a backend that
 filters in its own store wants the predicate, not a decision already made for it - the AST is
-public so it can be walked and pushed down instead of matched here. A filter that does not parse is already an
-`Error::InvalidFilter`, so a service that writes `?` answers a `400` with `scimType: invalidFilter`
-and the character the grammar broke at.
+public so it can be walked and pushed down instead of matched here. A filter that does not parse is
+already an `Error::InvalidFilter`, so a service that writes `?` answers a `400` with `scimType:
+invalidFilter` and the character the grammar broke at.
 
 A filter comes off the network, so it has a size: `filter::MAX_LENGTH` bytes and `filter::MAX_DEPTH`
 levels of `(` and `[`, both an order of magnitude past anything a client sends. Past either it is an
 `Error::InvalidFilter` rather than a parse, because the depth a filter parses to is the depth
 matching and dropping it recurse to, and a stack overflow in Rust takes the process with it.
 
-Matching is driven by the resource's JSON rather than by its declared schema. Attribute names are
-compared case-insensitively (RFC 7643 section 2.1) and so are string values, since `caseExact`
-defaults to false. A multi-valued attribute matches when any of its values does, and a `valuePath`
-such as `emails[type eq "work" and value co "@example.com"]` needs one element to satisfy every
-condition rather than the attribute as a whole. An attribute the resource does not carry matches
-nothing, and neither does a comparison between mismatched types - a question that cannot be asked
-of a resource is answered no, never with an error. A fully qualified `attrPath` is read against the
-URN it names: an extension's attributes are looked up inside that extension, a URN the resource
-lists among its `schemas` reads at the root, and a URN it claims neither way matches nothing rather
-than falling through to a core attribute of the same name.
+Which values a filter reaches is read off the resource's JSON; the schema only decides how strings
+compare. Attribute names are compared case-insensitively (RFC 7643 section 2.1), and so are string
+values unless the resource type's schema declares the attribute `caseExact`: `id`, `externalId` and
+`meta.resourceType` compare exactly, `userName` and `emails.value` do not. `matches_resource` and
+`list_response` look this up for core attributes, sub-attributes and extension attributes alike,
+while `Filter::matches` on bare JSON has no schema to ask and folds every string.
+
+A multi-valued attribute matches when any of its values does, and a `valuePath` such as
+`emails[type eq "work" and value co "@example.com"]` needs one element to satisfy every condition
+rather than the attribute as a whole. An attribute the resource does not carry matches nothing, and
+neither does a comparison between mismatched types - a question that cannot be asked of a resource
+is answered no, never with an error. A fully qualified `attrPath` is read against the URN it names:
+an extension's attributes are looked up inside that extension, a URN the resource lists among its
+`schemas` reads at the root, and a URN it claims neither way matches nothing rather than falling
+through to a core attribute of the same name.
 
 A service that does not want to filter should say so twice: leave `.with_filter(...)` at its
 default of `false` so `/ServiceProviderConfig` is honest, and refuse a request that carries a

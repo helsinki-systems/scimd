@@ -1,6 +1,7 @@
 //! The schema definitions for the two resource types RFC 7643 predefines, transcribed from
-//! sections 8.7.1 and 8.7.2. Attribute defaults come from [`Attributes::new`], so what is spelled
-//! out here is only what the RFC states explicitly beyond them.
+//! sections 8.7.1 and 8.7.2, and the common attributes of section 3.1 that neither lists. Attribute
+//! defaults come from [`Attributes::new`], so what is spelled out here is only what the RFC states
+//! explicitly beyond them.
 
 use super::schema::{Attributes, Schema, SubAttributes};
 use crate::Resource as _;
@@ -34,6 +35,34 @@ fn unlabelled_value_display_type_primary(value: SubAttributes) -> Vec<SubAttribu
         "A Boolean value indicating the 'primary' or preferred attribute value for this attribute. \
          The primary attribute value 'true' MUST appear no more than once.",
     )
+}
+
+impl Schema {
+    /// The attributes RFC 7643 section 3.1 gives every resource. No schema lists them, but their
+    /// characteristics still apply: `id`, `externalId`, `meta.resourceType` and `meta.version` are
+    /// `caseExact`.
+    pub fn common_attributes() -> Vec<Attributes> {
+        vec![
+            Attributes::new("id", "string")
+                .case_exact()
+                .mutability("readOnly")
+                .returned("always"),
+            Attributes::new("externalId", "string").case_exact(),
+            Attributes::new("meta", "complex")
+                .mutability("readOnly")
+                .sub_attributes(vec![
+                    SubAttributes::new("resourceType", "string")
+                        .case_exact()
+                        .mutability("readOnly"),
+                    SubAttributes::new("created", "dateTime").mutability("readOnly"),
+                    SubAttributes::new("lastModified", "dateTime").mutability("readOnly"),
+                    SubAttributes::new("location", "reference").mutability("readOnly"),
+                    SubAttributes::new("version", "string")
+                        .case_exact()
+                        .mutability("readOnly"),
+                ]),
+        ]
+    }
 }
 
 pub(super) fn user() -> Schema {

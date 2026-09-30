@@ -760,3 +760,136 @@ fn a_list_response_refuses_a_filter_it_cannot_read() {
          got {error:?}"
     );
 }
+
+const BADGE: &str = "urn:example:params:scim:schemas:core:2.0:Badge";
+const BADGE_ISSUE: &str = "urn:example:params:scim:schemas:extension:issue:2.0:Badge";
+
+/// A resource type whose schema declares `caseExact` on a core attribute, a sub-attribute and an
+/// extension attribute, each next to one that does not.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+struct Badge(Value);
+
+impl Resource for Badge {
+    type Id = String;
+
+    const RESOURCE_TYPE: &'static str = "Badge";
+    const ENDPOINT: &'static str = "/Badges";
+    const SCHEMA: &'static str = BADGE;
+
+    fn id(&self) -> Option<&String> {
+        None
+    }
+
+    fn meta(&self) -> Option<&crate::models::Meta> {
+        None
+    }
+
+    fn set_meta(&mut self, _: crate::models::Meta) {}
+
+    fn schema() -> crate::models::Schema {
+        use crate::models::{Attributes, SubAttributes};
+        crate::models::Schema::new(
+            BADGE,
+            "Badge",
+            "A badge",
+            vec![
+                Attributes::new("code", "string").case_exact(),
+                Attributes::new("label", "string"),
+                Attributes::new("tags", "complex")
+                    .multi_valued()
+                    .sub_attributes(vec![
+                        SubAttributes::new("value", "string").case_exact(),
+                        SubAttributes::new("display", "string"),
+                    ]),
+            ],
+        )
+    }
+
+    fn extensions() -> Vec<crate::models::Extension> {
+        vec![crate::models::Extension::optional(
+            crate::models::Schema::new(
+                BADGE_ISSUE,
+                "BadgeIssue",
+                "Who issued a badge",
+                vec![
+                    crate::models::Attributes::new("serial", "string").case_exact(),
+                    crate::models::Attributes::new("issuer", "string"),
+                ],
+            ),
+        )]
+    }
+}
+
+fn badge() -> Badge {
+    Badge(json!({
+        "schemas": [BADGE, BADGE_ISSUE],
+        "code": "AbC",
+        "label": "AbC",
+        "tags": [{ "value": "Red", "display": "Red" }],
+        (BADGE_ISSUE): { "serial": "XyZ", "issuer": "XyZ" },
+    }))
+}
+
+fn matches_badge(filter: &str) -> bool {
+    parsed(filter)
+        .matches_resource(&badge())
+        .expect("a badge serializes")
+}
+
+#[test]
+fn a_case_exact_attribute_matches_only_in_its_own_case() {
+    for (wrong, right) in [
+        (r#"code eq "abc""#, r#"code eq "AbC""#),
+        (r#"code co "B""#, r#"code co "b""#),
+        (r#"code sw "a""#, r#"code sw "A""#),
+        (r#"code ew "c""#, r#"code ew "C""#),
+    ] {
+        assert!(!matches_badge(wrong), "`{wrong}` differs in case");
+        assert!(matches_badge(right), "`{right}` does not");
+        let folded = wrong.replace("code", "LABEL");
+        assert!(matches_badge(&folded), "`{folded}` is not caseExact");
+    }
+    assert!(matches_badge(r#"code ne "abc""#));
+}
+
+#[test]
+fn case_exact_is_read_from_sub_attributes_and_extensions_too() {
+    for (wrong, matching) in [
+        (r#"tags.value eq "red""#, r#"tags.display eq "red""#),
+        (r#"tags[value eq "red"]"#, r#"tags[display eq "red"]"#),
+        // A comparison on the complex attribute itself falls through to its `value`.
+        (r#"tags eq "red""#, r#"tags eq "Red""#),
+        (
+            r#"urn:example:params:scim:schemas:extension:issue:2.0:Badge:serial eq "xyz""#,
+            r#"urn:example:params:scim:schemas:extension:issue:2.0:Badge:issuer eq "xyz""#,
+        ),
+    ] {
+        assert!(!matches_badge(wrong), "`{wrong}` differs in case");
+        assert!(matches_badge(matching), "`{matching}` should match");
+    }
+}
+
+#[test]
+fn the_built_in_schemas_make_id_and_external_id_case_exact_but_not_user_name() {
+    let user = crate::models::User {
+        id: Some("Id-1".into()),
+        external_id: Some("Ext-1".into()),
+        user_name: "bjensen".into(),
+        meta: Some(crate::models::Meta {
+            resource_type: Some("User".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let matches_user = |filter: &str| parsed(filter).matches_resource(&user).expect("a user");
+
+    assert!(!matches_user(r#"id eq "id-1""#));
+    assert!(!matches_user(r#"externalId eq "ext-1""#));
+    assert!(!matches_user(r#"meta.resourceType eq "user""#));
+    assert!(
+        matches_user(r#"ID eq "Id-1""#),
+        "attribute names still fold"
+    );
+    assert!(matches_user(r#"userName eq "BJensen""#));
+}

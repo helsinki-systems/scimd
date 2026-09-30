@@ -5,10 +5,11 @@
 //! assert!(filter.matches(&serde_json::json!({ "userName": "bjensen" })));
 //! ```
 //!
-//! Evaluation reads the JSON, not the resource's schema, with two consequences. Values are matched
-//! case-insensitively as well as attribute names, because RFC 7643 section 7 defaults `caseExact`
-//! to false and nothing here knows which attributes declare otherwise. And a comparison whose
-//! operands have no ordering, such as `active gt true`, is not a match rather than an error.
+//! Attribute names always match case-insensitively (RFC 7643 section 2.1). String values do too,
+//! RFC 7643 section 7's default, except where [`Filter::matches_resource`] finds the attribute
+//! declared `caseExact` in the resource type's schema; [`Filter::matches`] has no schema to ask.
+//! A comparison whose operands have no ordering, such as `active gt true`, is not a match rather
+//! than an error.
 
 mod eval;
 mod parser;
@@ -18,6 +19,7 @@ mod tests;
 
 pub use parser::{MAX_DEPTH, MAX_LENGTH, parse};
 
+use crate::Resource;
 use crate::models::{FilterQuery, ListResponse};
 
 /// Answers a list request from a collection the service holds whole: keeps what the query's
@@ -31,16 +33,17 @@ use crate::models::{FilterQuery, ListResponse};
 ///
 /// [`crate::Error::InvalidFilter`] if the filter does not parse, and whatever
 /// [`Filter::matches_resource`] raises.
-pub fn list_response<R: serde::Serialize>(
+pub fn list_response<R: Resource>(
     resources: Vec<R>,
     query: &FilterQuery,
 ) -> crate::Result<ListResponse<R>> {
     let matched = match query.filter.as_deref().map(parse).transpose()? {
         None => resources,
         Some(filter) => {
+            let schemas = eval::Schemas::of::<R>();
             let mut matched = Vec::with_capacity(resources.len());
             for resource in resources {
-                if filter.matches_resource(&resource)? {
+                if filter.matches_in(&resource, &schemas)? {
                     matched.push(resource);
                 }
             }
@@ -106,22 +109,32 @@ pub enum CompareValue {
 }
 
 impl Filter {
-    /// Whether a resource, as JSON, satisfies this filter.
+    /// Whether a resource, as JSON, satisfies this filter. Without a schema every string value
+    /// matches case-insensitively.
     #[must_use]
     pub fn matches(&self, resource: &serde_json::Value) -> bool {
-        eval::matches(self, resource)
+        eval::matches(self, resource, eval::Scope::Unknown)
     }
 
-    /// [`Filter::matches`] for a service that holds its resources typed rather than as JSON.
+    /// Whether a typed resource satisfies this filter, honouring the `caseExact` its resource
+    /// type's schema, its extensions and RFC 7643 section 3.1's common attributes declare.
     ///
     /// # Errors
     ///
     /// [`crate::Error::InternalError`] if the resource cannot be serialised.
-    pub fn matches_resource<T: serde::Serialize>(&self, resource: &T) -> crate::Result<bool> {
+    pub fn matches_resource<R: Resource>(&self, resource: &R) -> crate::Result<bool> {
+        self.matches_in(resource, &eval::Schemas::of::<R>())
+    }
+
+    fn matches_in<R: Resource>(
+        &self,
+        resource: &R,
+        schemas: &eval::Schemas,
+    ) -> crate::Result<bool> {
         let value = serde_json::to_value(resource).map_err(|e| {
             anyhow::Error::new(e).context("serialising a resource to match a filter against it")
         })?;
-        Ok(self.matches(&value))
+        Ok(eval::matches(self, &value, eval::Scope::Resource(schemas)))
     }
 }
 
