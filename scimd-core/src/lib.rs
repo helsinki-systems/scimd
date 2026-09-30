@@ -151,9 +151,22 @@ impl Scim {
         }
     }
 
+    /// A filter the service never sees is better than one it silently ignores: an IdP that asks
+    /// `userName eq "jdoe"` and gets every user back links the account to the wrong person. So
+    /// while `/ServiceProviderConfig` advertises no filtering, a query that carries one is refused.
+    fn refuse_unsupported_filter(&self, query: &FilterQuery) -> Result<()> {
+        if query.filter.is_some() && !self.config.filter.supported {
+            return Err(Error::InvalidFilter(
+                "this server does not support filtering".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// # Errors
     ///
-    /// Whatever the [`ResourceService`] answers, or [`Error::MethodNotImplemented`] if it does not
+    /// [`Error::InvalidFilter`] if the query carries a filter while filtering is not enabled, else
+    /// whatever the [`ResourceService`] answers, or [`Error::MethodNotImplemented`] if it does not
     /// implement `list`.
     pub async fn list(&self, endpoint: &str, query: FilterQuery) -> Result<Value> {
         self.list_as(endpoint, query, metrics::Operation::List)
@@ -172,6 +185,7 @@ impl Scim {
         query: FilterQuery,
         operation: metrics::Operation,
     ) -> Result<Value> {
+        self.refuse_unsupported_filter(&query)?;
         let handler = self.handler(endpoint)?;
         self.observe(
             handler.resource_type(),
@@ -259,6 +273,7 @@ impl Scim {
     /// Whatever a service answers other than [`Error::MethodNotImplemented`], which is skipped: a
     /// resource type that does not support listing simply contributes nothing.
     pub async fn search_all(&self, query: FilterQuery) -> Result<Value> {
+        self.refuse_unsupported_filter(&query)?;
         let mut total = 0;
         let mut resources = vec![];
         for handler in self.handlers.values() {

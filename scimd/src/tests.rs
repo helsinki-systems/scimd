@@ -486,6 +486,70 @@ async fn patch_maps_val_to_200_and_empty_to_204() {
 }
 
 #[actix_web::test]
+async fn a_patch_without_a_path_reaches_the_service_with_one() {
+    let app = test_app!(thing_app());
+    let created: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::POST, "/v2/Things")
+            .set_json(Thing::new("before"))
+            .to_request(),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let patched: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::PATCH, &format!("/v2/Things/{id}"))
+            .set_json(serde_json::json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [{ "op": "replace", "value": { "displayName": "after" } }],
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(patched["displayName"], "after");
+
+    let refused = actix_test::call_service(
+        &app,
+        request(Method::PATCH, &format!("/v2/Things/{id}"))
+            .set_json(serde_json::json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [{ "op": "remove" }],
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = actix_test::read_body_json(refused).await;
+    assert_eq!(
+        body["status"], "400",
+        "a SCIM error document, not actix's plain text"
+    );
+}
+
+#[actix_web::test]
+async fn a_filter_is_refused_while_filtering_is_not_advertised() {
+    let store = ThingStore::default();
+    let seen = store.seen.clone();
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<Thing, _>(store)
+    ));
+
+    let resp = actix_test::call_service(
+        &app,
+        request(Method::GET, "/v2/Things?filter=displayName%20eq%20%22x%22").to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = actix_test::read_body_json(resp).await;
+    assert_eq!(body["scimType"], "invalidFilter");
+    assert!(
+        seen.lock().unwrap().is_none(),
+        "the service never saw the query"
+    );
+}
+
+#[actix_web::test]
 async fn discovery_is_derived_from_the_registry() {
     let app = test_app!(AppBuilder::new(
         ScimBuilder::new()
@@ -865,7 +929,9 @@ async fn search_reaches_the_same_list_as_get() {
     let store = ThingStore::default();
     let seen = store.seen.clone();
     let app = test_app!(AppBuilder::new(
-        ScimBuilder::new().register::<Thing, _>(store)
+        ScimBuilder::new()
+            .register::<Thing, _>(store)
+            .with_filter(true, None)
     ));
     let _ = seed!(app, "first");
 
@@ -891,7 +957,9 @@ async fn a_filter_survives_the_query_string_and_parses() {
     let store = ThingStore::default();
     let seen = store.seen.clone();
     let app = test_app!(AppBuilder::new(
-        ScimBuilder::new().register::<Thing, _>(store)
+        ScimBuilder::new()
+            .register::<Thing, _>(store)
+            .with_filter(true, None)
     ));
     let _ = seed!(app, "first");
 

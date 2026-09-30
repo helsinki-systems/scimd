@@ -122,13 +122,17 @@ async fn replace(
     construct_response(scim.replace(endpoint, &id, body.into_inner()).await?)
 }
 
+/// The body is parsed here rather than by `web::Json<PatchOp>`, so that an invalid `PatchOp`
+/// answers with a SCIM error document instead of actix's plain-text `400`.
 async fn patch(
     scim: web::Data<Scim>,
     endpoint: &'static str,
     id: web::Path<String>,
-    op: web::Json<models::PatchOp>,
+    body: web::Json<serde_json::Value>,
 ) -> HttpResult {
-    match scim.patch(endpoint, &id, op.into_inner()).await? {
+    let op = serde_json::from_value(body.into_inner())
+        .map_err(|e| Error::BadRequest(format!("invalid PatchOp: {e}")))?;
+    match scim.patch(endpoint, &id, op).await? {
         Some(v) => construct_response(v),
         None => Ok(HttpResponse::NoContent().finish()),
     }
@@ -242,7 +246,7 @@ fn configure(cfg: &mut web::ServiceConfig, scim: Scim, auth: middleware::Auth) {
                         patch,
                         endpoint,
                         id: web::Path<String>,
-                        op: web::Json<models::PatchOp>
+                        body: web::Json<serde_json::Value>
                     )))
                     .route(web::delete().to(bind!(delete, endpoint, id: web::Path<String>))),
             );
