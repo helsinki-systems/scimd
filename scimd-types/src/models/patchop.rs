@@ -1,3 +1,5 @@
+use super::user::{Email, primary_email};
+
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(try_from = "RawPatchOp")]
 pub struct PatchOp {
@@ -47,6 +49,63 @@ impl Operation {
             path,
             value,
         }
+    }
+
+    // Operation names are case-insensitive in practice: Entra ID capitalises them.
+
+    pub fn is_add(&self) -> bool {
+        self.op.eq_ignore_ascii_case("add")
+    }
+
+    pub fn is_remove(&self) -> bool {
+        self.op.eq_ignore_ascii_case("remove")
+    }
+
+    pub fn is_replace(&self) -> bool {
+        self.op.eq_ignore_ascii_case("replace")
+    }
+
+    /// The attribute this operation targets, lowercased and with the URN prefix, any `valuePath`
+    /// filter and any sub-attribute stripped: `urn:...:User:emails[type eq "work"].value` is an
+    /// operation on `emails`. See [`normalize_attr`] for why the URN goes.
+    pub fn attr(&self) -> String {
+        // The `valuePath` goes first, since its filter may quote a colon or a dot.
+        let path = self.path.split('[').next().unwrap_or_default();
+        let attr = normalize_attr(path);
+        attr.split('.').next().unwrap_or_default().to_owned()
+    }
+
+    pub fn str_value(&self) -> Option<&str> {
+        self.value.as_ref()?.as_str()
+    }
+
+    /// A boolean, which some clients send as a JSON string rather than a JSON boolean.
+    pub fn bool_value(&self) -> Option<bool> {
+        match self.value.as_ref()? {
+            serde_json::Value::Bool(b) => Some(*b),
+            serde_json::Value::String(s) if s.eq_ignore_ascii_case("true") => Some(true),
+            serde_json::Value::String(s) if s.eq_ignore_ascii_case("false") => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The address an `emails` operation carries, written either as a bare string under
+    /// `emails[type eq "work"].value` or under `emails` as the multi-valued attribute or a single
+    /// element of it. Of several addresses, the one [`User::primary_email`] would pick wins.
+    ///
+    /// [`User::primary_email`]: super::User::primary_email
+    pub fn email_address(&self) -> Option<String> {
+        use serde::Deserialize as _;
+
+        let value = self.value.as_ref()?;
+        if let serde_json::Value::String(address) = value {
+            return Some(address.clone());
+        }
+        // Deserialising from `&Value` rather than `Value` keeps both attempts clone-free.
+        let emails = <Vec<Email>>::deserialize(value)
+            .or_else(|_| Email::deserialize(value).map(|one| vec![one]))
+            .ok()?;
+        primary_email(&emails).map(ToOwned::to_owned)
     }
 }
 
@@ -146,7 +205,7 @@ pub fn normalize_attr(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PatchOp, normalize_attr};
+    use super::{Operation, PatchOp, normalize_attr};
     use serde_json::json;
 
     fn parse(operations: serde_json::Value) -> Result<PatchOp, serde_json::Error> {
@@ -199,5 +258,73 @@ mod tests {
     #[test]
     fn a_sub_attribute_keeps_its_dotted_path() {
         assert_eq!(normalize_attr("name.givenName"), "name.givenname");
+    }
+
+    fn op(name: &str, path: &str, value: serde_json::Value) -> Operation {
+        Operation {
+            op: name.into(),
+            path: path.into(),
+            value: Some(value),
+        }
+    }
+
+    #[test]
+    fn an_operation_name_is_read_case_insensitively() {
+        assert!(op("Replace", "active", json!(false)).is_replace());
+        assert!(Operation::remove("members".into()).is_remove());
+        assert!(!op("add", "members", json!([])).is_remove());
+    }
+
+    #[test]
+    fn a_patch_path_reduces_to_the_attribute_it_targets() {
+        let attr = |path: &str| Operation::remove(path.into()).attr();
+        for path in [
+            "emails",
+            "EMAILS",
+            "emails.value",
+            "emails[type eq \"work\"].value",
+            "urn:ietf:params:scim:schemas:core:2.0:User:emails",
+            "urn:ietf:params:scim:schemas:core:2.0:User:emails[value ew \"a.b:c\"]",
+        ] {
+            assert_eq!(attr(path), "emails", "for '{path}'");
+        }
+    }
+
+    #[test]
+    fn a_boolean_is_read_whether_it_arrives_as_one_or_as_a_string() {
+        assert_eq!(
+            op("replace", "active", json!(false)).bool_value(),
+            Some(false)
+        );
+        assert_eq!(
+            op("replace", "active", json!("False")).bool_value(),
+            Some(false),
+            "some identity providers quote their booleans"
+        );
+        assert_eq!(op("replace", "active", json!("yes")).bool_value(), None);
+    }
+
+    #[test]
+    fn an_email_patch_is_read_from_every_shape_it_arrives_in() {
+        let shapes = [
+            op(
+                "replace",
+                "emails[type eq \"work\"].value",
+                json!("new@b.c"),
+            ),
+            op(
+                "replace",
+                "emails",
+                json!([{"value": "old@b.c"}, {"value": "new@b.c", "primary": true}]),
+            ),
+            op("replace", "emails", json!({"value": "new@b.c"})),
+        ];
+        for operation in shapes {
+            assert_eq!(
+                operation.email_address().as_deref(),
+                Some("new@b.c"),
+                "{operation:?}"
+            );
+        }
     }
 }

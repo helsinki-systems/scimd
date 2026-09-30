@@ -18,6 +18,48 @@ mod tests;
 
 pub use parser::{MAX_DEPTH, MAX_LENGTH, parse};
 
+use crate::models::{FilterQuery, ListResponse};
+
+/// Answers a list request from a collection the service holds whole: keeps what the query's
+/// `filter` matches, then pages what is left by `startIndex` and `count`. `totalResults` counts
+/// every match, not just the page.
+///
+/// A backend that can filter or page in its own store should do that instead and answer with
+/// [`ListResponse::paginated`] itself.
+///
+/// # Errors
+///
+/// [`crate::Error::InvalidFilter`] if the filter does not parse, and whatever
+/// [`Filter::matches_resource`] raises.
+pub fn list_response<R: serde::Serialize>(
+    resources: Vec<R>,
+    query: &FilterQuery,
+) -> crate::Result<ListResponse<R>> {
+    let matched = match query.filter.as_deref().map(parse).transpose()? {
+        None => resources,
+        Some(filter) => {
+            let mut matched = Vec::with_capacity(resources.len());
+            for resource in resources {
+                if filter.matches_resource(&resource)? {
+                    matched.push(resource);
+                }
+            }
+            matched
+        }
+    };
+
+    // RFC 7644 section 3.4.2.4: `startIndex` counts from 1, and anything below 1 counts as 1.
+    let total = matched.len();
+    let start_index = query.start_index.unwrap_or(1).max(1);
+    let page: Vec<R> = matched
+        .into_iter()
+        .skip(start_index - 1)
+        .take(query.count.unwrap_or(usize::MAX))
+        .collect();
+
+    Ok(ListResponse::paginated(page, total, start_index))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     And(Box<Filter>, Box<Filter>),

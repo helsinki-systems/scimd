@@ -88,6 +88,22 @@ impl Resource for User {
     }
 }
 
+impl User {
+    /// The address to treat as the user's own: the one marked primary, else the first that has a
+    /// value.
+    pub fn primary_email(&self) -> Option<&str> {
+        primary_email(self.emails.as_deref().unwrap_or_default())
+    }
+}
+
+pub(crate) fn primary_email(emails: &[Email]) -> Option<&str> {
+    emails
+        .iter()
+        .find(|e| e.primary == Some(true))
+        .or_else(|| emails.iter().find(|e| e.value.is_some()))
+        .and_then(|e| e.value.as_deref())
+}
+
 impl Default for User {
     fn default() -> Self {
         Self {

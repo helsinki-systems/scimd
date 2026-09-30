@@ -107,25 +107,49 @@ batch, unless the request sets `failOnErrors`. A `POST` may carry a `bulkId`, wh
 operations in the same batch reference as `bulkId:<value>` in a path or anywhere in their data;
 resolution is sequential, so the operation defining a `bulkId` must come before the ones using it.
 
-`startIndex`/`count` on a list request are passed to the service untouched - scimd never slices a
-result set itself. A service that pages should answer with `ListResponse::paginated`.
+`startIndex`/`count` on a list request are passed to the service untouched. A service that pages in
+its backend answers with `ListResponse::paginated`; one that holds the collection whole hands it to
+`scimd::filter::list_response`, below.
 
-### Filtering
+### PATCH
 
-`filter` arrives as an opaque string on `FilterQuery` and is passed to the service untouched.
-`scimd::filter::parse` turns one into a `Filter` - the RFC 7644 section 3.4.2.2 grammar, all of it,
-`valuePath` brackets included - and a `Filter` matches against a resource:
+A service's `patch` gets a `PatchOp` whose operations all carry a `path`: an `add` or `replace`
+without one (RFC 7644 section 3.5.2) is split into one operation per attribute before it arrives.
+`Operation` reads an operation the way identity providers actually write one:
 
 ```rust
-async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
-    let filter = query.filter.as_deref().map(scimd::filter::parse).transpose()?;
-    // ... keep a device when `filter` is None or `filter.matches_resource(device)?`
+for operation in &op.operations {
+    // `urn:...:User:emails[type eq "work"].value` targets "emails"
+    match operation.attr().as_str() {
+        "active" => set_active(operation.bool_value()),     // true, or "True"
+        "emails" => set_email(operation.email_address()),   // a bare string or the emails array
+        "displayname" if operation.is_remove() => clear_display_name(),
+        "displayname" => set_display_name(operation.str_value()),
+        _ => {}                                             // lenient: ignore what has no home
+    }
 }
 ```
 
-Parsing is the service's call rather than scimd's, because a backend that filters in its own store
-wants the predicate, not a decision already made for it - the AST is public so it can be walked and
-pushed down instead of matched here. A filter that does not parse is already an
+`attr()` comes back lowercased, since attribute names are case-insensitive (RFC 7643 section 2.1).
+`is_add()`, `is_remove()` and `is_replace()` ignore case too, because Entra ID capitalises its
+operation names. Of several addresses, `email_address()` picks the one `User::primary_email` would.
+
+### Filtering
+
+`filter` arrives as an opaque string on `FilterQuery` and is passed to the service untouched. A
+service that holds its collection whole lets scimd filter and page it:
+
+```rust
+async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
+    scimd::filter::list_response(self.all_devices(), &query)  // filter, then startIndex/count
+}
+```
+
+Underneath, `scimd::filter::parse` turns the string into a `Filter` - the RFC 7644 section 3.4.2.2
+grammar, all of it, `valuePath` brackets included - and `Filter::matches_resource` matches one
+against a resource. Parsing is the service's call rather than scimd's, because a backend that
+filters in its own store wants the predicate, not a decision already made for it - the AST is
+public so it can be walked and pushed down instead of matched here. A filter that does not parse is already an
 `Error::InvalidFilter`, so a service that writes `?` answers a `400` with `scimType: invalidFilter`
 and the character the grammar broke at.
 
@@ -237,8 +261,8 @@ Two limits come from Kimai's API, and the client sees both:
 kimaid never writes Kimai roles. Sending `roles` replaces a user's entire role list, and the valid
 values differ per instance, so omitting the field leaves Kimai's own roles alone.
 
-Neither Kimai collection endpoint pages or filters, so kimaid fetches both whole and narrows them
-itself. `filter` matches exactly, and `startIndex`/`count` slice what is left.
+Neither Kimai collection endpoint pages or filters, so kimaid fetches both whole and hands them to
+`scimd::filter::list_response`, which applies `filter` and then slices by `startIndex`/`count`.
 
 ## Directory structure
 

@@ -683,3 +683,80 @@ fn a_non_ascii_value_still_folds_case_the_unicode_way() {
     assert!(matches("displayName sw \"m\u{fc}\"", &user));
     assert!(matches("displayName ew \"hen\"", &user));
 }
+
+fn users(names: &[&str]) -> Vec<crate::models::User> {
+    names
+        .iter()
+        .map(|name| crate::models::User {
+            user_name: (*name).to_owned(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn user_names(response: &crate::models::ListResponse<crate::models::User>) -> Vec<&str> {
+    response
+        .resources
+        .iter()
+        .map(|u| u.user_name.as_str())
+        .collect()
+}
+
+#[test]
+fn a_list_response_keeps_only_what_the_filter_matches() {
+    let query = |filter: &str| crate::models::FilterQuery {
+        filter: Some(filter.into()),
+        ..Default::default()
+    };
+
+    let one = super::list_response(
+        users(&["bjensen", "jsmith"]),
+        &query(r#"userName eq "jsmith""#),
+    )
+    .expect("a list");
+    assert_eq!(one.total_results, 1);
+    assert_eq!(user_names(&one), ["jsmith"]);
+
+    // Matching nothing is an empty page, not an error.
+    let none = super::list_response(users(&["bjensen"]), &query(r#"userName eq "nobody""#))
+        .expect("a list");
+    assert_eq!(none.total_results, 0);
+    assert!(none.resources.is_empty());
+}
+
+#[test]
+fn a_list_response_pages_from_one_and_counts_every_match() {
+    let query = crate::models::FilterQuery {
+        start_index: Some(3),
+        count: Some(2),
+        ..Default::default()
+    };
+    let response =
+        super::list_response(users(&["u1", "u2", "u3", "u4", "u5"]), &query).expect("a list");
+    assert_eq!(response.total_results, 5, "the count before the page");
+    assert_eq!(response.start_index, Some(3));
+    assert_eq!(response.items_per_page, Some(2));
+    assert_eq!(user_names(&response), ["u3", "u4"]);
+
+    let from_zero = crate::models::FilterQuery {
+        start_index: Some(0),
+        ..Default::default()
+    };
+    let response = super::list_response(users(&["u1"]), &from_zero).expect("a list");
+    assert_eq!(response.start_index, Some(1), "below 1 counts as 1");
+    assert_eq!(user_names(&response), ["u1"]);
+}
+
+#[test]
+fn a_list_response_refuses_a_filter_it_cannot_read() {
+    let query = crate::models::FilterQuery {
+        filter: Some("userName eq".into()),
+        ..Default::default()
+    };
+    let error = super::list_response(users(&["bjensen"]), &query).unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidFilter(_)),
+        "answering the whole collection to a filter we could not read would look like success, \
+         got {error:?}"
+    );
+}

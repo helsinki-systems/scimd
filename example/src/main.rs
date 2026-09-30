@@ -143,22 +143,8 @@ impl DeviceService {
 #[scimd::async_trait]
 impl ResourceService<Device> for DeviceService {
     async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
-        let filter = query
-            .filter
-            .as_deref()
-            .map(scimd::filter::parse)
-            .transpose()?;
-        let mut matched = vec![];
-        for device in self.devices().values() {
-            let keep = match &filter {
-                None => true,
-                Some(filter) => filter.matches_resource(device)?,
-            };
-            if keep {
-                matched.push(device.clone());
-            }
-        }
-        Ok(ListResponse::new(matched))
+        let devices = self.devices().values().cloned().collect();
+        scimd::filter::list_response(devices, &query)
     }
 
     async fn create(&self, mut device: Device) -> scimd::Result<Device> {
