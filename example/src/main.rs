@@ -1,51 +1,18 @@
-//! Two resources served by the same server:
+//! Two resources served by the same server, both backed by in-memory stores:
 //!
-//! - `User`, a resource type built into scimd, backed by a service that only logs.
-//! - `Device`, a resource type defined entirely here, backed by an in-memory store.
+//! - `User`, scimd's built-in user plus a mailbox extension, see [`mail`].
+//! - `Device`, a resource type defined entirely here.
 //!
-//! `Device` needs no changes to the framework: implementing [`scimd::Resource`] tells scimd how to
-//! route and describe it, and implementing [`scimd::ResourceService`] tells it what to do.
+//! Neither needs changes to the framework: implementing [`scimd::Resource`] tells scimd how to
+//! route and describe a type, and implementing [`scimd::ResourceService`] tells it what to do.
+
+mod mail;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use scimd::models::{
-    Attributes, Extension, FilterQuery, ListResponse, Meta, PatchOp, Schema, ValOrEmpty,
-};
+use scimd::models::{Attributes, Extension, FilterQuery, ListResponse, Meta, Schema};
 use scimd::{Resource, ResourceService};
-
-struct UserService {}
-
-#[scimd::async_trait]
-impl ResourceService<scimd::models::User> for UserService {
-    async fn create(&self, user: scimd::models::User) -> scimd::Result<scimd::models::User> {
-        tracing::info!("create user: {:?}", user);
-        Err(scimd::Error::MethodNotImplemented)
-    }
-
-    async fn replace(
-        &self,
-        id: String,
-        user: scimd::models::User,
-    ) -> scimd::Result<scimd::models::User> {
-        tracing::info!("replace user: {} {:?}", id, user);
-        Err(scimd::Error::NotFound(id))
-    }
-
-    async fn patch(
-        &self,
-        id: String,
-        op: PatchOp,
-    ) -> scimd::Result<ValOrEmpty<scimd::models::User>> {
-        tracing::info!("patch user: {} {:?}", id, op);
-        Err(scimd::Error::NotFound(id))
-    }
-
-    async fn delete(&self, id: String) -> scimd::Result<()> {
-        tracing::info!("delete user: {}", id);
-        Ok(())
-    }
-}
 
 /// A resource type that is not part of SCIM's predefined set.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -187,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = scimd_server::parse_args();
     let scim = scimd::ScimBuilder::new()
-        .register::<scimd::models::User, _>(UserService {})
+        .register::<mail::MailUser, _>(mail::MailUsers::default())
         .register::<Device, _>(DeviceService::default())
         .with_bulk(true, Some(50), Some(1024 * 1024))
         .with_filter(true, None);

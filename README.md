@@ -87,6 +87,9 @@ scimd advertises it under `schemaExtensions` in `/ResourceTypes`, serves its def
 `/Schemas`, and adds the URN to a response's `schemas` array whenever the extension is actually
 populated - so a service cannot forget to declare data it returned.
 
+To extend a built-in type, wrap it: `example/src/mail.rs` flattens `User` into a `MailUser` that
+adds a mailbox extension and serves it on `/Users`.
+
 ### Search and bulk
 
 `POST {endpoint}/.search` takes the same query a `GET` list takes, but in the body, for filters too
