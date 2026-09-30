@@ -3,6 +3,7 @@ name = "scimd-core"
 edition = "2024"
 version.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]
