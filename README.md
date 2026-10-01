@@ -213,7 +213,7 @@ routes without them.
 | Metric | Labels |
 |---|---|
 | `scimd_http_requests_total` | `endpoint`, `method`, `status` |
-| `scimd_http_requests_duration_seconds` | `endpoint`, `method`, `status` |
+| `scimd_http_request_duration_seconds` | `endpoint`, `method`, `status` |
 | `scimd_scim_operations_total` | `resource_type`, `operation`, `source`, `outcome` |
 | `scimd_scim_operation_duration_seconds` | `resource_type`, `operation` |
 | `scimd_bulk_operations_per_request` | - |

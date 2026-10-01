@@ -704,6 +704,7 @@ dependencies = [
  "scimd",
  "scimd-server",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",

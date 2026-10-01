@@ -3,7 +3,7 @@
 //! pattern* - `/v2/Users/{id}`, never the concrete path. The SCIM layer's own is
 //! `scimd::ScimMetrics`.
 
-use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
+use actix_web_prom::{ActixMetricsConfiguration, PrometheusMetrics, PrometheusMetricsBuilder};
 use scimd::MetricsRegistry as Registry;
 
 const NAMESPACE: &str = "scimd";
@@ -20,6 +20,12 @@ pub(crate) fn http_middleware(registry: Registry) -> anyhow::Result<PrometheusMe
         .endpoint(ENDPOINT)
         .exclude("/health")
         .mask_unmatched_patterns(UNMATCHED)
+        // The library's default, `http_requests_duration_seconds`, breaks Prometheus naming and
+        // doesn't match `scim_operation_duration_seconds`.
+        .metrics_configuration(
+            ActixMetricsConfiguration::default()
+                .http_requests_duration_seconds_name("http_request_duration_seconds"),
+        )
         .registry(registry)
         .build()
         .map_err(|e| anyhow::anyhow!("could not set up the HTTP metrics: {e}"))

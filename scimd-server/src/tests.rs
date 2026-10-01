@@ -225,6 +225,10 @@ mod metrics {
             body.contains("scimd_http_requests_total"),
             "the HTTP metrics are exposed too: {body}"
         );
+        assert!(
+            body.contains("scimd_http_request_duration_seconds_count"),
+            "the HTTP duration uses the singular name: {body}"
+        );
     }
 
     #[actix_web::test]
