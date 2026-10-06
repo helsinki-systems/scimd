@@ -63,8 +63,7 @@ fn created_response(body: serde_json::Value) -> HttpResult {
     let mut response = HttpResponse::Created();
     response.append_header((http::header::CONTENT_TYPE, SCIM_MEDIA_TYPE));
     if let Some(location) = body
-        .get("meta")
-        .and_then(|m| m.get("location"))
+        .pointer("/meta/location")
         .and_then(serde_json::Value::as_str)
     {
         response.append_header((http::header::LOCATION, location));
@@ -315,6 +314,7 @@ impl App {
 
 /// Wraps a configured [`ScimBuilder`] with what only the HTTP layer decides: the bearer token and
 /// where the metrics go.
+#[derive(Default)]
 pub struct AppBuilder {
     core: ScimBuilder,
     bearer_token: Option<String>,
@@ -325,21 +325,12 @@ pub struct AppBuilder {
     metrics_enabled: Option<bool>,
 }
 
-impl Default for AppBuilder {
-    fn default() -> Self {
-        Self::new(ScimBuilder::new())
-    }
-}
-
 impl AppBuilder {
     #[must_use]
     pub fn new(core: ScimBuilder) -> Self {
         Self {
             core,
-            bearer_token: None,
-            upstream_authentication: false,
-            registry: None,
-            metrics_enabled: None,
+            ..Self::default()
         }
     }
 

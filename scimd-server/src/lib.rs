@@ -26,7 +26,7 @@ pub use opts::{Args, load_config, parse_args};
 pub use scimd;
 use scimd::{App, MetricsRegistry};
 
-const DEFAULT_BIND: &str = "127.0.0.1:8080";
+const DEFAULT_BIND: &str = "127.0.0.1:5000";
 
 /// Installs the process-wide `tracing` subscriber and routes the `log` crate into it.
 ///
@@ -34,10 +34,8 @@ const DEFAULT_BIND: &str = "127.0.0.1:8080";
 /// `set_global_default` only succeeds once.
 pub fn init_logging() -> anyhow::Result<()> {
     tracing_log::LogTracer::init()?;
-    let (log_env_filter, _) = tracing_subscriber::reload::Layer::new(
-        tracing_subscriber::filter::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::filter::EnvFilter::new("info")),
-    );
+    let log_env_filter = tracing_subscriber::filter::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::filter::EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_span_events(
             tracing_subscriber::fmt::format::FmtSpan::NEW
@@ -143,6 +141,7 @@ impl Server {
     /// a server told only about a Unix socket must not quietly also listen on TCP.
     fn tcp_binds(&self) -> Vec<&str> {
         if self.bind.is_empty() && self.unix_bind.is_empty() {
+            tracing::warn!("Neither --bind nor --unix-bind given - using {DEFAULT_BIND}");
             vec![DEFAULT_BIND]
         } else {
             self.bind.iter().map(String::as_str).collect()
@@ -176,25 +175,19 @@ impl Server {
         let _ = sd_notify::notify(&[sd_notify::NotifyState::Ready]);
         let server = server.disable_signals().run();
         tokio::pin!(server);
-        tokio::select! {
-            r = sigint.recv() => {
-                tracing::info!("Received interrupt signal - shutting down gracefully");
-                r.unwrap();
-                let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
-                let ((), r) = tokio::join!(server.handle().stop(true), server);
-                r.unwrap();
-            },
-            r = sigterm.recv() => {
-                tracing::info!("Received term signal - shutting down gracefully");
-                r.unwrap();
-                let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
-                let ((), r) = tokio::join!(server.handle().stop(true), server);
-                r.unwrap();
-            },
+        let (signal, r) = tokio::select! {
+            r = sigint.recv() => ("interrupt", r),
+            r = sigterm.recv() => ("term", r),
             r = &mut server => {
                 r.unwrap();
+                return Ok(());
             }
         };
+        tracing::info!("Received {signal} signal - shutting down gracefully");
+        r.unwrap();
+        let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
+        let ((), r) = tokio::join!(server.handle().stop(true), server);
+        r.unwrap();
         Ok(())
     }
 }

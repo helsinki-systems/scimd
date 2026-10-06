@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+futures-util.workspace = true
 nom.workspace = true
 prometheus.workspace = true
 serde.workspace = true

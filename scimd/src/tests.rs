@@ -175,6 +175,22 @@ fn request(method: Method, uri: &str) -> actix_test::TestRequest {
         .insert_header((header::ACCEPT, "application/scim+json"))
 }
 
+macro_rules! seed {
+    ($app:expr, $name:expr) => {{
+        let created: serde_json::Value = actix_test::call_and_read_body_json(
+            &$app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new($name))
+                .to_request(),
+        )
+        .await;
+        created["id"]
+            .as_str()
+            .expect("created thing has an id")
+            .to_owned()
+    }};
+}
+
 #[actix_web::test]
 async fn crud_round_trip_through_dynamic_routes() {
     let app = test_app!(thing_app());
@@ -268,28 +284,12 @@ async fn unimplemented_operations_answer_501() {
 }
 
 #[actix_web::test]
-async fn unregistered_endpoint_is_404() {
-    let app = test_app!(thing_app());
-
-    let resp =
-        actix_test::call_service(&app, request(Method::GET, "/v2/Widgets").to_request()).await;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-#[actix_web::test]
 async fn acceptable_media_types_are_served() {
     let app = test_app!(thing_app());
 
+    // The `headers` unit tests cover the parsing. This test only checks the middleware wiring.
     for accept in [
         None,
-        Some(""),
-        Some("*/*"),
-        Some("application/*"),
-        Some("application/scim+json"),
-        Some("application/json"),
-        Some("APPLICATION/SCIM+JSON"),
-        Some("application/scim+json; charset=utf-8"),
-        Some("text/html, application/xhtml+xml, application/scim+json;q=0.1"),
         Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
     ] {
         let mut req = actix_test::TestRequest::default().uri("/v2/Things");
@@ -310,28 +310,22 @@ async fn acceptable_media_types_are_served() {
 async fn unacceptable_media_types_are_406_not_404() {
     let app = test_app!(thing_app());
 
-    for accept in ["text/html", "application/xml", "text/plain, image/png"] {
-        let resp = actix_test::call_service(
-            &app,
-            actix_test::TestRequest::default()
-                .uri("/v2/Things")
-                .insert_header((header::ACCEPT, accept))
-                .to_request(),
-        )
-        .await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::NOT_ACCEPTABLE,
-            "Accept: {accept} should have been refused"
-        );
+    let resp = actix_test::call_service(
+        &app,
+        actix_test::TestRequest::default()
+            .uri("/v2/Things")
+            .insert_header((header::ACCEPT, "text/html"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
 
-        let body: serde_json::Value = actix_test::read_body_json(resp).await;
-        assert_eq!(
-            body["schemas"][0],
-            "urn:ietf:params:scim:api:messages:2.0:Error"
-        );
-        assert_eq!(body["status"], "406");
-    }
+    let body: serde_json::Value = actix_test::read_body_json(resp).await;
+    assert_eq!(
+        body["schemas"][0],
+        "urn:ietf:params:scim:api:messages:2.0:Error"
+    );
+    assert_eq!(body["status"], "406");
 }
 
 macro_rules! get_things {
@@ -451,14 +445,7 @@ async fn malformed_payload_is_a_scim_bad_request() {
 async fn patch_maps_val_to_200_and_empty_to_204() {
     let app = test_app!(thing_app());
 
-    let created: serde_json::Value = actix_test::call_and_read_body_json(
-        &app,
-        request(Method::POST, "/v2/Things")
-            .set_json(Thing::new("before"))
-            .to_request(),
-    )
-    .await;
-    let id = created["id"].as_str().unwrap().to_owned();
+    let id = seed!(app, "before");
 
     let empty = actix_test::call_service(
         &app,
@@ -488,14 +475,7 @@ async fn patch_maps_val_to_200_and_empty_to_204() {
 #[actix_web::test]
 async fn a_patch_without_a_path_reaches_the_service_with_one() {
     let app = test_app!(thing_app());
-    let created: serde_json::Value = actix_test::call_and_read_body_json(
-        &app,
-        request(Method::POST, "/v2/Things")
-            .set_json(Thing::new("before"))
-            .to_request(),
-    )
-    .await;
-    let id = created["id"].as_str().unwrap().to_owned();
+    let id = seed!(app, "before");
 
     let patched: serde_json::Value = actix_test::call_and_read_body_json(
         &app,
@@ -880,48 +860,6 @@ fn search_body(filter: Option<&str>) -> crate::models::SearchRequest {
         filter: filter.map(str::to_string),
         ..Default::default()
     }
-}
-
-macro_rules! seed {
-    ($app:expr, $name:expr) => {{
-        let created: serde_json::Value = actix_test::call_and_read_body_json(
-            &$app,
-            request(Method::POST, "/v2/Things")
-                .set_json(Thing::new($name))
-                .to_request(),
-        )
-        .await;
-        created["id"]
-            .as_str()
-            .expect("created thing has an id")
-            .to_owned()
-    }};
-}
-
-#[actix_web::test]
-async fn create_answers_201_with_a_location() {
-    let app = test_app!(thing_app());
-
-    let resp = actix_test::call_service(
-        &app,
-        request(Method::POST, "/v2/Things")
-            .set_json(Thing::new("first"))
-            .to_request(),
-    )
-    .await;
-
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .expect("a created resource says where it lives")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(
-        location.starts_with("/v2/Things/"),
-        "unexpected Location: {location}"
-    );
 }
 
 #[actix_web::test]

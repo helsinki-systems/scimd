@@ -246,14 +246,12 @@ fn compare_any(
     wanted: &CompareValue,
     case_exact: CaseExact,
 ) -> bool {
-    match op {
-        CompareOp::Ne => !candidates
-            .iter()
-            .any(|candidate| compare(CompareOp::Eq, candidate, wanted, case_exact)),
-        _ => candidates
-            .iter()
-            .any(|candidate| compare(op, candidate, wanted, case_exact)),
+    if matches!(op, CompareOp::Ne) {
+        return !compare_any(CompareOp::Eq, candidates, wanted, case_exact);
     }
+    candidates
+        .iter()
+        .any(|candidate| compare(op, candidate, wanted, case_exact))
 }
 
 fn compare(op: CompareOp, candidate: &Value, wanted: &CompareValue, case_exact: CaseExact) -> bool {
@@ -303,20 +301,19 @@ fn substring(candidate: &Value, wanted: &CompareValue, r#where: Where, exact: bo
         return false;
     };
     if exact {
-        return match r#where {
-            Where::Anywhere => haystack.contains(needle.as_str()),
-            Where::Start => haystack.starts_with(needle.as_str()),
-            Where::End => haystack.ends_with(needle.as_str()),
-        };
+        return found(haystack, needle, r#where);
     }
     if haystack.is_ascii() && needle.is_ascii() {
         return found_ascii(haystack.as_bytes(), needle.as_bytes(), r#where);
     }
-    let (haystack, needle) = (haystack.to_lowercase(), needle.to_lowercase());
+    found(&haystack.to_lowercase(), &needle.to_lowercase(), r#where)
+}
+
+fn found(haystack: &str, needle: &str, r#where: Where) -> bool {
     match r#where {
-        Where::Anywhere => haystack.contains(&needle),
-        Where::Start => haystack.starts_with(&needle),
-        Where::End => haystack.ends_with(&needle),
+        Where::Anywhere => haystack.contains(needle),
+        Where::Start => haystack.starts_with(needle),
+        Where::End => haystack.ends_with(needle),
     }
 }
 

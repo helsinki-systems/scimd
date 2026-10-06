@@ -27,11 +27,10 @@ impl<T> ListResponse<T> {
 
     pub fn paginated(resources: Vec<T>, total_results: usize, start_index: usize) -> Self {
         Self {
-            schemas: vec!["urn:ietf:params:scim:api:messages:2.0:ListResponse".into()],
             total_results,
             items_per_page: Some(resources.len()),
             start_index: Some(start_index),
-            resources,
+            ..Self::new(resources)
         }
     }
 }

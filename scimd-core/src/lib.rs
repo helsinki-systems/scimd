@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use futures_util::future::join_all;
 use serde_json::Value;
 
 mod bulk;
@@ -29,6 +30,7 @@ pub use metrics::ScimMetrics;
 pub use resource::ResourceService;
 pub use scimd_types::{Error, Resource, Result, SCIM_BASE_PATH, StatusCode, models};
 
+use metrics::{Operation, Source};
 use models::service_provider_config::{AuthenticationScheme, BulkConfig, FilterConfig};
 use models::{
     BulkRequest, BulkResponse, FilterQuery, ListResponse, PatchOp, ResourceType, Schema,
@@ -120,8 +122,8 @@ impl Scim {
 
     /// Routes are only ever built from [`Self::endpoints`], so a miss means the two went out of
     /// sync - a bug, not a bad request.
-    fn handler(&self, endpoint: &str) -> Result<&Arc<dyn ErasedHandler>> {
-        self.handlers.get(endpoint).ok_or_else(|| {
+    fn handler(&self, endpoint: &str) -> Result<&dyn ErasedHandler> {
+        self.handlers.get(endpoint).map(Arc::as_ref).ok_or_else(|| {
             Error::InternalError(anyhow::anyhow!(
                 "no handler registered for endpoint {endpoint}"
             ))
@@ -130,14 +132,14 @@ impl Scim {
 
     async fn observe<T>(
         &self,
-        resource_type: &str,
-        operation: metrics::Operation,
-        source: metrics::Source,
+        handler: &dyn ErasedHandler,
+        operation: Operation,
+        source: Source,
         call: impl Future<Output = Result<T>>,
     ) -> Result<T> {
         metrics::observe(
             self.metrics.as_deref(),
-            resource_type,
+            handler.resource_type(),
             operation,
             source,
             call,
@@ -169,28 +171,26 @@ impl Scim {
     /// whatever the [`ResourceService`] answers, or [`Error::MethodNotImplemented`] if it does not
     /// implement `list`.
     pub async fn list(&self, endpoint: &str, query: FilterQuery) -> Result<Value> {
-        self.list_as(endpoint, query, metrics::Operation::List)
-            .await
+        self.list_as(endpoint, query, Operation::List).await
     }
 
     /// `POST {endpoint}/.search` - the same query as [`Self::list`], counted apart from it.
     pub async fn search(&self, endpoint: &str, query: FilterQuery) -> Result<Value> {
-        self.list_as(endpoint, query, metrics::Operation::Search)
-            .await
+        self.list_as(endpoint, query, Operation::Search).await
     }
 
     async fn list_as(
         &self,
         endpoint: &str,
         query: FilterQuery,
-        operation: metrics::Operation,
+        operation: Operation,
     ) -> Result<Value> {
         self.refuse_unsupported_filter(&query)?;
         let handler = self.handler(endpoint)?;
         self.observe(
-            handler.resource_type(),
+            handler,
             operation,
-            metrics::Source::Http,
+            Source::Http,
             handler.list(self.base(), query),
         )
         .await
@@ -203,9 +203,9 @@ impl Scim {
     pub async fn create(&self, endpoint: &str, body: Value) -> Result<Value> {
         let handler = self.handler(endpoint)?;
         self.observe(
-            handler.resource_type(),
-            metrics::Operation::Create,
-            metrics::Source::Http,
+            handler,
+            Operation::Create,
+            Source::Http,
             handler.create(self.base(), body),
         )
         .await
@@ -218,9 +218,9 @@ impl Scim {
     pub async fn get(&self, endpoint: &str, id: &str) -> Result<Value> {
         let handler = self.handler(endpoint)?;
         self.observe(
-            handler.resource_type(),
-            metrics::Operation::Get,
-            metrics::Source::Http,
+            handler,
+            Operation::Get,
+            Source::Http,
             handler.get(self.base(), id),
         )
         .await
@@ -228,13 +228,9 @@ impl Scim {
 
     pub async fn replace(&self, endpoint: &str, id: &str, body: Value) -> Result<Value> {
         let handler = self.handler(endpoint)?;
-        self.observe(
-            handler.resource_type(),
-            metrics::Operation::Replace,
-            metrics::Source::Http,
-            handler.replace(self.base(), id, body),
-        )
-        .await
+        let call = handler.replace(self.base(), id, body);
+        self.observe(handler, Operation::Replace, Source::Http, call)
+            .await
     }
 
     /// `Ok(None)` when the service applied the patch but chose not to return the resource, which
@@ -242,9 +238,9 @@ impl Scim {
     pub async fn patch(&self, endpoint: &str, id: &str, op: PatchOp) -> Result<Option<Value>> {
         let handler = self.handler(endpoint)?;
         self.observe(
-            handler.resource_type(),
-            metrics::Operation::Patch,
-            metrics::Source::Http,
+            handler,
+            Operation::Patch,
+            Source::Http,
             handler.patch(self.base(), id, op),
         )
         .await
@@ -252,13 +248,8 @@ impl Scim {
 
     pub async fn delete(&self, endpoint: &str, id: &str) -> Result<()> {
         let handler = self.handler(endpoint)?;
-        self.observe(
-            handler.resource_type(),
-            metrics::Operation::Delete,
-            metrics::Source::Http,
-            handler.delete(id),
-        )
-        .await
+        self.observe(handler, Operation::Delete, Source::Http, handler.delete(id))
+            .await
     }
 
     /// `POST /.search` at the root: every registered resource type at once.
@@ -274,18 +265,18 @@ impl Scim {
     /// resource type that does not support listing simply contributes nothing.
     pub async fn search_all(&self, query: FilterQuery) -> Result<Value> {
         self.refuse_unsupported_filter(&query)?;
+        // `join_all` queries every backend at once and keeps registry order. The metrics count each
+        // call before the skip below, because a resource type that cannot list is still worth
+        // counting.
+        let answers = join_all(self.handlers.values().map(|handler| {
+            let call = handler.list(self.base(), query.clone());
+            self.observe(&**handler, Operation::Search, Source::Http, call)
+        }))
+        .await;
+
         let mut total = 0;
         let mut resources = vec![];
-        for handler in self.handlers.values() {
-            // Observed before the skip below: a resource type that cannot list is worth counting.
-            let answer = self
-                .observe(
-                    handler.resource_type(),
-                    metrics::Operation::Search,
-                    metrics::Source::Http,
-                    handler.list(self.base(), query.clone()),
-                )
-                .await;
+        for answer in answers {
             let mut list = match answer {
                 Ok(list) => list,
                 Err(Error::MethodNotImplemented) => continue,
@@ -300,9 +291,16 @@ impl Scim {
             }
         }
 
-        let mut combined = ListResponse::new(resources);
+        // Serialising only the envelope and moving the resources in afterwards avoids copying them
+        // a second time. `Resources` is the envelope's last field, so appending it keeps the wire
+        // order.
+        let mut combined = ListResponse::<Value>::new(vec![]);
         combined.total_results = total;
-        resource::to_body(&combined)
+        let mut body = resource::to_body(&combined)?;
+        if !resources.is_empty() {
+            body["Resources"] = Value::Array(resources);
+        }
+        Ok(body)
     }
 
     /// `POST /Bulk` from the bytes as received, so that `maxPayloadSize` is checked against what
@@ -414,33 +412,24 @@ impl Scim {
                 self.config.bulk.max_payload_size,
             )
             .with_sort(self.config.enable_sort);
-        for scheme in &self.config.authentication_schemes {
-            config = config.add_authentication_scheme(scheme.clone());
-        }
+        config
+            .authentication_schemes
+            .clone_from(&self.config.authentication_schemes);
         config
     }
 }
 
+#[derive(Default)]
 pub struct ScimBuilder {
     handlers: Registry,
     config: ScimConfig,
     metrics: Option<Arc<ScimMetrics>>,
 }
 
-impl Default for ScimBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ScimBuilder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            handlers: Registry::new(),
-            config: ScimConfig::default(),
-            metrics: None,
-        }
+        Self::default()
     }
 
     /// Registers the service backing a single SCIM resource type. `R` is normally inferred from the

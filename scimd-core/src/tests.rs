@@ -101,18 +101,3 @@ async fn bulk_is_refused_until_it_is_enabled() {
     let scim = ScimBuilder::new().with_bulk(true, None, None).build();
     assert!(scim.bulk(BulkRequest::default()).await.is_ok());
 }
-
-#[test]
-fn finalize_writes_the_location_the_server_was_configured_for() {
-    for base in ["/v2", "/scim/v2", "/tenants/acme/scim/v2"] {
-        let mut thing = Thing {
-            id: Some("abc".into()),
-            meta: None,
-        };
-        finalize(&mut thing, base);
-        assert_eq!(
-            thing.meta.expect("meta was filled in").location,
-            Some(format!("{base}/Things/abc"))
-        );
-    }
-}

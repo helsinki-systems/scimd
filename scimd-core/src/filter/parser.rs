@@ -162,32 +162,31 @@ fn top_level(input: &str) -> Parsed<'_, Filter> {
 }
 
 fn or_expr(input: &str, ctx: Ctx) -> Parsed<'_, Filter> {
-    let (input, first) = and_expr(input, ctx)?;
-    let (input, rest) = many0(preceded(
-        (multispace0, keyword("or"), multispace0),
-        move |i| and_expr(i, ctx),
-    ))
-    .parse(input)?;
-    Ok((
-        input,
-        rest.into_iter().fold(first, |left, right| {
-            Filter::Or(Box::new(left), Box::new(right))
-        }),
-    ))
+    chain(input, ctx, "or", and_expr, Filter::Or)
 }
 
 fn and_expr(input: &str, ctx: Ctx) -> Parsed<'_, Filter> {
-    let (input, first) = not_expr(input, ctx)?;
+    chain(input, ctx, "and", not_expr, Filter::And)
+}
+
+/// `next (keyword next)*`, folded left so that `a or b or c` is `(a or b) or c`.
+fn chain<'a>(
+    input: &'a str,
+    ctx: Ctx,
+    kw: &'static str,
+    next: fn(&'a str, Ctx) -> Parsed<'a, Filter>,
+    join: fn(Box<Filter>, Box<Filter>) -> Filter,
+) -> Parsed<'a, Filter> {
+    let (input, first) = next(input, ctx)?;
     let (input, rest) = many0(preceded(
-        (multispace0, keyword("and"), multispace0),
-        move |i| not_expr(i, ctx),
+        (multispace0, keyword(kw), multispace0),
+        move |i| next(i, ctx),
     ))
     .parse(input)?;
     Ok((
         input,
-        rest.into_iter().fold(first, |left, right| {
-            Filter::And(Box::new(left), Box::new(right))
-        }),
+        rest.into_iter()
+            .fold(first, |left, right| join(Box::new(left), Box::new(right))),
     ))
 }
 

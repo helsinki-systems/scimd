@@ -22,18 +22,7 @@ pub struct Args {
 }
 
 pub fn parse_args() -> Args {
-    let mut args = Args::parse();
-    if args.bind.is_empty() && args.unix_bind.is_empty() {
-        tracing::warn!("Neither --bind nor --unix-bind given - using default");
-        args.bind.push("127.0.0.1:5000".into());
-    }
-    args
-}
-
-#[derive(serde::Deserialize, Debug)]
-pub struct Config<T> {
-    #[serde(flatten)]
-    inner: T,
+    Args::parse()
 }
 
 /// Loads the config from specified path
@@ -44,7 +33,7 @@ where
 {
     let filepath = &args.config_path;
     tracing::info!("Trying to loading file: {filepath}");
-    let conf: Config<T> = if let Ok(content) = fs_err::read_to_string(filepath) {
+    let conf: T = if let Ok(content) = fs_err::read_to_string(filepath) {
         toml::from_str(&content)
             .with_context(|| format!("Failed to toml load from '{filepath}'"))?
     } else {
@@ -52,5 +41,5 @@ where
         toml::from_str("").context("Failed to parse empty string as config")?
     };
     tracing::info!("Loaded config: {conf:?}");
-    Ok(conf.inner)
+    Ok(conf)
 }
