@@ -24,8 +24,6 @@
           rustPackages.rustc
           llvmPackages.clang
           llvmPackages.lld
-          # Native dependencies
-          pkg-config
           rustPackages.cargo
           # Utilities
           unstable.cargo-deny
@@ -36,13 +34,10 @@
           rustPackages.clippy
           rustPackages.rustfmt
         ];
-        buildInputs = with pkgs; [
-          openssl
-        ];
       in
       {
         devShells.default = pkgs.mkShell {
-          inherit nativeBuildInputs buildInputs;
+          inherit nativeBuildInputs;
 
           RUST_SRC_PATH = "${rustPackages.rustPlatform.rustLibSrc}";
         };

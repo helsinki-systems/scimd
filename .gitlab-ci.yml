@@ -1,5 +1,0 @@
-include:
-  - project: "helsinki-systems/gitlab-ci-templates"
-    ref: "master"
-    file:
-      - "rust/all.yml"

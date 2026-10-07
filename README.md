@@ -252,20 +252,6 @@ One exception: `scimd::Error` cannot implement actix's `ResponseError` from `sci
 `scimd::ScimError` wraps it and does, and `?` converts, so a hand-written actix handler returns
 `Result<_, scimd::ScimError>`.
 
-## Native dependencies for nix package in helsinki
-
-Add the following e.g. to the corresponding Cargo.toml
-
-```
-[package.metadata.nix]
-nativeBuildInputs = [
-    ["pkg-config"],
-]
-buildInputs = [
-    ["openssl"],
-]
-```
-
 ## License
 
 AGPL-3.0-or-later, see [LICENSE](LICENSE).
