@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 
-use super::{AttrPath, CompareOp, CompareValue, Filter, MAX_DEPTH, MAX_LENGTH, parse};
+use super::{
+    AttrPath, CompareOp, CompareValue, Filter, MAX_DEPTH, MAX_LENGTH, parse, patch_values,
+};
+use crate::models::patchop::Operation;
 use crate::{Error, Resource};
 
 const RFC_EXAMPLES: &[&str] = &[
@@ -892,4 +895,33 @@ fn the_built_in_schemas_make_id_and_external_id_case_exact_but_not_user_name() {
         "attribute names still fold"
     );
     assert!(matches_user(r#"userName eq "BJensen""#));
+}
+
+#[test]
+fn a_patch_names_its_values_through_the_path_or_the_value() {
+    let ids = |op: Operation| patch_values(&op);
+    assert_eq!(
+        ids(Operation::remove(r#"members[value eq "7"]"#.into())),
+        ["7"]
+    );
+    assert_eq!(
+        ids(Operation::remove(
+            r#"urn:ietf:params:scim:schemas:core:2.0:Group:members[type eq "User" and value eq "7"]"#
+                .into()
+        )),
+        ["7"],
+        "the bracket is filter grammar, so a compound one still names its member"
+    );
+    assert_eq!(
+        ids(Operation::remove(r#"members[not (value eq "7")]"#.into())),
+        Vec::<String>::new(),
+        "a negation names everyone but 7, which is not a value to act on"
+    );
+    assert_eq!(
+        ids(Operation::add(
+            "members".into(),
+            Some(json!([{"value": "7"}, "9", {"value": ""}]))
+        )),
+        ["7", "9"]
+    );
 }

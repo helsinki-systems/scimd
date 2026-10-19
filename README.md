@@ -137,6 +137,10 @@ for operation in &op.operations {
 `is_add()`, `is_remove()` and `is_replace()` ignore case too, because Entra ID capitalises its
 operation names. Of several addresses, `email_address()` picks the one `User::primary_email` would.
 
+For a multi-valued attribute such as `members`, `scimd::filter::patch_values(operation)` returns
+the values an operation names. It reads them from the operation's value, or else from a
+`members[value eq "7"]` path.
+
 ### Filtering
 
 `filter` arrives as an opaque string on `FilterQuery` and is passed to the service untouched. A

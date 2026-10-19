@@ -22,6 +22,59 @@ pub use parser::{MAX_DEPTH, MAX_LENGTH, parse};
 use crate::Resource;
 use crate::models::{FilterQuery, ListResponse};
 
+/// The values a PATCH operation on a multi-valued attribute names, such as the user ids of a
+/// `members` operation. They come from the operation's value when it has one, as bare strings or
+/// `{"value": ...}` objects. Otherwise they come from a `members[value eq "7"]` path.
+///
+/// The filter parser reads the bracket instead of a scan for quotes, so `members[value eq "a\"b"]`
+/// and `members[type eq "User" and value eq "7"]` both work. A path that selects elements another
+/// way, such as `members[not (value eq "7")]`, names nothing.
+#[must_use]
+pub fn patch_values(op: &crate::models::patchop::Operation) -> Vec<String> {
+    use serde_json::Value;
+
+    let value_id = |value: &Value| {
+        match value {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) => o
+                .get("value")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            _ => None,
+        }
+        .filter(|id| !id.is_empty())
+    };
+
+    let from_value: Vec<String> = match op.value.as_ref() {
+        Some(Value::Array(items)) => items.iter().filter_map(value_id).collect(),
+        one => one.and_then(value_id).into_iter().collect(),
+    };
+    if !from_value.is_empty() {
+        return from_value;
+    }
+    // `parse` takes a filter, and a PATCH path may carry a trailing sub-attribute it rejects.
+    op.path
+        .rfind(']')
+        .and_then(|end| parse(&op.path[..=end]).ok())
+        .and_then(|filter| first_value_eq(&filter))
+        .into_iter()
+        .collect()
+}
+
+/// The first `value eq "..."` in `filter`. A valuePath that names one element carries exactly one.
+fn first_value_eq(filter: &Filter) -> Option<String> {
+    match filter {
+        Filter::ValuePath { filter, .. } => first_value_eq(filter),
+        Filter::And(a, b) | Filter::Or(a, b) => first_value_eq(a).or_else(|| first_value_eq(b)),
+        Filter::Compare {
+            attr,
+            op: CompareOp::Eq,
+            value: CompareValue::String(s),
+        } if attr.attr.eq_ignore_ascii_case("value") => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Answers a list request from a collection the service holds whole: keeps what the query's
 /// `filter` matches, then pages what is left by `startIndex` and `count`. `totalResults` counts
 /// every match, not just the page.
