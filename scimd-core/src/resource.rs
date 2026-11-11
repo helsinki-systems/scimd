@@ -37,6 +37,12 @@ pub trait ResourceService<R: Resource>: Send + Sync {
     async fn delete(&self, _id: R::Id) -> Result<()> {
         Err(Error::MethodNotImplemented)
     }
+
+    /// The schema `/Schemas` serves for `R`. Override it to leave out attributes the product
+    /// cannot store, so a client can tell which ones it may expect back. See [`Schema::only`].
+    fn schema(&self) -> Schema {
+        R::schema()
+    }
 }
 
 /// The object-safe view of a [`ResourceService`], so that services for different resource types can
@@ -173,7 +179,7 @@ where
     }
 
     fn schema(&self) -> Schema {
-        R::schema()
+        self.service.schema()
     }
 
     fn extensions(&self) -> Vec<Extension> {

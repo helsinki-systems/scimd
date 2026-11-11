@@ -604,6 +604,35 @@ async fn discovery_is_derived_from_the_registry() {
     assert_eq!(missing_schema.status(), StatusCode::NOT_FOUND);
 }
 
+struct NamelessUserService {}
+
+#[crate::async_trait]
+impl ResourceService<User> for NamelessUserService {
+    fn schema(&self) -> Schema {
+        User::schema().only(&["username", "displayName"])
+    }
+}
+
+#[actix_web::test]
+async fn a_service_serves_its_own_schema() {
+    let app = test_app!(AppBuilder::new(
+        ScimBuilder::new().register::<User, _>(NamelessUserService {})
+    ));
+
+    let schema: serde_json::Value = actix_test::call_and_read_body_json(
+        &app,
+        request(Method::GET, &format!("/v2/Schemas/{}", User::SCHEMA)).to_request(),
+    )
+    .await;
+    let names = schema["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(vec!["userName", "displayName"], names);
+}
+
 struct SilentUserService {}
 
 #[crate::async_trait]

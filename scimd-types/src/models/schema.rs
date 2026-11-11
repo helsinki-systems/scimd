@@ -33,6 +33,15 @@ impl Schema {
         }
     }
 
+    /// Keeps only the attributes named in `names`, compared case insensitively as RFC 7643
+    /// section 2.1 asks.
+    #[must_use]
+    pub fn only(mut self, names: &[&str]) -> Self {
+        self.attributes
+            .retain(|a| names.iter().any(|n| n.eq_ignore_ascii_case(&a.name)));
+        self
+    }
+
     /// Points `meta.location` at this schema on a server serving `/Schemas` under `base`.
     #[must_use]
     pub fn at_base(mut self, base: &str) -> Self {
