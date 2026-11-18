@@ -29,7 +29,11 @@ pub struct User {
     pub locale: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -160,7 +164,11 @@ pub struct Email {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -190,7 +198,11 @@ pub struct PhoneNumber {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -202,7 +214,11 @@ pub struct Im {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -214,7 +230,11 @@ pub struct Photo {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -238,7 +258,11 @@ pub struct Entitlement {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -250,7 +274,11 @@ pub struct Role {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
 }
 
@@ -262,6 +290,39 @@ pub struct X509Certificate {
     pub display: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::lenient_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub primary: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::User;
+    use crate::Resource as _;
+    use serde_json::json;
+
+    #[test]
+    fn booleans_may_arrive_as_strings() {
+        let user: User = serde_json::from_value(json!({
+            "schemas": [User::SCHEMA],
+            "userName": "jdoe",
+            "active": "False",
+            "emails": [{"value": "a@b.c", "primary": "True"}, {"value": "d@e.f"}],
+        }))
+        .unwrap();
+        assert_eq!(user.active, Some(false));
+        let emails = user.emails.as_deref().unwrap();
+        assert_eq!(emails[0].primary, Some(true));
+        assert_eq!(emails[1].primary, None);
+
+        let refused = serde_json::from_value::<User>(json!({
+            "schemas": [User::SCHEMA],
+            "userName": "jdoe",
+            "active": "yes",
+        }));
+        assert!(refused.is_err());
+    }
 }

@@ -33,3 +33,31 @@ pub enum ValOrEmpty<T> {
     Val(T),
     Empty,
 }
+
+/// An optional boolean that may also arrive as the string `"true"` or `"false"` in any case.
+/// Entra ID sends `"True"`.
+pub(crate) fn lenient_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    use serde::de::{Error as _, Unexpected};
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Bool(bool),
+        String(String),
+    }
+
+    match Option::<Lenient>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Lenient::Bool(b)) => Ok(Some(b)),
+        Some(Lenient::String(s)) if s.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(Lenient::String(s)) if s.eq_ignore_ascii_case("false") => Ok(Some(false)),
+        Some(Lenient::String(s)) => Err(D::Error::invalid_value(
+            Unexpected::Str(&s),
+            &"a boolean, or \"true\" or \"false\"",
+        )),
+    }
+}
