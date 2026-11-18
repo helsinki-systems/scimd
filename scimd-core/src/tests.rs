@@ -94,10 +94,10 @@ fn a_configured_path_is_normalised_to_one_leading_slash() {
 async fn bulk_is_refused_until_it_is_enabled() {
     let scim = ScimBuilder::new().build();
     assert!(matches!(
-        scim.bulk(BulkRequest::default()).await,
+        scim.bulk(&(), BulkRequest::default()).await,
         Err(Error::MethodNotImplemented)
     ));
 
     let scim = ScimBuilder::new().with_bulk(true, None, None).build();
-    assert!(scim.bulk(BulkRequest::default()).await.is_ok());
+    assert!(scim.bulk(&(), BulkRequest::default()).await.is_ok());
 }

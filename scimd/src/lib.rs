@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use actix_web::{http, web};
+use actix_web::{HttpMessage as _, HttpRequest, http, web};
 
 mod error;
 pub mod middleware;
@@ -25,6 +25,55 @@ pub use scimd_core::{
 use middleware::SCIM_MEDIA_TYPE;
 
 type HttpResult = std::result::Result<HttpResponse, ScimError>;
+
+/// The request context `C` a [`ResourceService`] takes. The host's own middleware puts it into the
+/// request extensions, and scimd reads it from there.
+///
+/// `C` is cloned once per request, so it should be cheap to clone, such as a `Copy` id or an `Arc`.
+///
+/// ```
+/// #[derive(Clone)]
+/// struct Tenant(u32);
+/// impl scimd::RequestContext for Tenant {}
+/// ```
+pub trait RequestContext: Clone + Sync + 'static {
+    /// `None` answers a `500`. A request that reaches the mount without its context is a host bug.
+    fn from_request(req: &HttpRequest) -> Option<Self> {
+        req.extensions().get::<Self>().cloned()
+    }
+}
+
+/// No context at all, which every request has.
+impl RequestContext for () {
+    fn from_request(_: &HttpRequest) -> Option<Self> {
+        Some(())
+    }
+}
+
+/// [`RequestContext`] as an extractor. Not `web::ReqData`, because its missing-data error is plain
+/// text and nobody inserts `()`.
+struct Context<C>(C);
+
+impl<C: RequestContext> actix_web::FromRequest for Context<C> {
+    type Error = ScimError;
+    type Future = std::future::Ready<std::result::Result<Self, ScimError>>;
+
+    fn from_request(req: &HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
+        std::future::ready(
+            <C as RequestContext>::from_request(req)
+                .map(Context)
+                .ok_or_else(|| {
+                    tracing::error!(
+                        "the host did not provide a {} for {}. It has to put one into the \
+                         request extensions before the request reaches scimd",
+                        std::any::type_name::<C>(),
+                        req.path()
+                    );
+                    Error::InternalError(anyhow::anyhow!("missing request context")).into()
+                }),
+        )
+    }
+}
 
 /// How the mount authenticates. Owned and `Send`, unlike [`middleware::Auth`], because
 /// [`App::configure`]'s closure is cloned into every worker.
@@ -45,8 +94,8 @@ impl Authentication {
     }
 }
 
-pub struct App {
-    scim: Scim,
+pub struct App<C = ()> {
+    scim: Scim<C>,
     auth: Authentication,
     /// The registry the SCIM collectors were registered into, or `None` when metrics are off.
     registry: Option<MetricsRegistry>,
@@ -71,99 +120,146 @@ fn created_response(body: serde_json::Value) -> HttpResult {
     Ok(response.json(body))
 }
 
-async fn list(
-    scim: web::Data<Scim>,
+async fn list<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     query: web::Query<models::FilterQuery>,
 ) -> HttpResult {
-    construct_response(scim.list(endpoint, query.into_inner()).await?)
+    construct_response(scim.list(&ctx, endpoint, query.into_inner()).await?)
 }
 
-async fn create(
-    scim: web::Data<Scim>,
+async fn create<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     body: web::Json<serde_json::Value>,
 ) -> HttpResult {
-    created_response(scim.create(endpoint, body.into_inner()).await?)
+    created_response(scim.create(&ctx, endpoint, body.into_inner()).await?)
 }
 
-async fn search(
-    scim: web::Data<Scim>,
+async fn search<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     request: web::Json<models::SearchRequest>,
 ) -> HttpResult {
-    construct_response(scim.search(endpoint, request.into_inner().into()).await?)
+    construct_response(
+        scim.search(&ctx, endpoint, request.into_inner().into())
+            .await?,
+    )
 }
 
-async fn search_all(
-    scim: web::Data<Scim>,
+async fn search_all<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     request: web::Json<models::SearchRequest>,
 ) -> HttpResult {
-    construct_response(scim.search_all(request.into_inner().into()).await?)
+    construct_response(scim.search_all(&ctx, request.into_inner().into()).await?)
 }
 
 /// The body is taken as bytes rather than parsed JSON so that `maxPayloadSize` is checked against
 /// what was actually received.
-async fn bulk_operations(scim: web::Data<Scim>, body: web::Bytes) -> HttpResult {
-    construct_response(scim.bulk_bytes(&body).await?)
+async fn bulk_operations<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
+    body: web::Bytes,
+) -> HttpResult {
+    construct_response(scim.bulk_bytes(&ctx, &body).await?)
 }
 
-async fn get(scim: web::Data<Scim>, endpoint: &'static str, id: web::Path<String>) -> HttpResult {
-    construct_response(scim.get(endpoint, &id).await?)
+async fn get<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
+    endpoint: &'static str,
+    id: web::Path<String>,
+) -> HttpResult {
+    construct_response(scim.get(&ctx, endpoint, &id).await?)
 }
 
-async fn replace(
-    scim: web::Data<Scim>,
+async fn replace<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     id: web::Path<String>,
     body: web::Json<serde_json::Value>,
 ) -> HttpResult {
-    construct_response(scim.replace(endpoint, &id, body.into_inner()).await?)
+    construct_response(scim.replace(&ctx, endpoint, &id, body.into_inner()).await?)
 }
 
-/// The body is parsed here rather than by `web::Json<PatchOp>`, so that an invalid `PatchOp`
-/// answers with a SCIM error document instead of actix's plain-text `400`.
-async fn patch(
-    scim: web::Data<Scim>,
+async fn patch<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     id: web::Path<String>,
-    body: web::Json<serde_json::Value>,
+    op: web::Json<models::PatchOp>,
 ) -> HttpResult {
-    let op = serde_json::from_value(body.into_inner())
-        .map_err(|e| Error::BadRequest(format!("invalid PatchOp: {e}")))?;
-    match scim.patch(endpoint, &id, op).await? {
+    match scim.patch(&ctx, endpoint, &id, op.into_inner()).await? {
         Some(v) => construct_response(v),
         None => Ok(HttpResponse::NoContent().finish()),
     }
 }
 
-async fn delete(
-    scim: web::Data<Scim>,
+async fn delete<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    Context(ctx): Context<C>,
     endpoint: &'static str,
     id: web::Path<String>,
 ) -> HttpResult {
-    scim.delete(endpoint, &id).await?;
+    scim.delete(&ctx, endpoint, &id).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
-async fn list_resource_types(scim: web::Data<Scim>) -> HttpResult {
+async fn list_resource_types<C: RequestContext>(scim: web::Data<Scim<C>>) -> HttpResult {
     construct_response(scim.resource_types())
 }
 
-async fn get_resource_type(scim: web::Data<Scim>, id: web::Path<String>) -> HttpResult {
+async fn get_resource_type<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    id: web::Path<String>,
+) -> HttpResult {
     construct_response(scim.resource_type(&id)?)
 }
 
-async fn list_schemas(scim: web::Data<Scim>) -> HttpResult {
+async fn list_schemas<C: RequestContext>(scim: web::Data<Scim<C>>) -> HttpResult {
     construct_response(scim.schemas())
 }
 
-async fn get_schema(scim: web::Data<Scim>, urn: web::Path<String>) -> HttpResult {
+async fn get_schema<C: RequestContext>(
+    scim: web::Data<Scim<C>>,
+    urn: web::Path<String>,
+) -> HttpResult {
     construct_response(scim.schema(&urn)?)
 }
 
-async fn service_provider(scim: web::Data<Scim>) -> HttpResult {
+async fn service_provider<C: RequestContext>(scim: web::Data<Scim<C>>) -> HttpResult {
     construct_response(scim.service_provider_config())
+}
+
+/// A body that is not JSON, or not the JSON a route expects, answers a SCIM error document rather
+/// than actix's plain text. Any `Content-Type` is read as JSON, because some IdPs send none or
+/// `text/plain`.
+fn json_config() -> web::JsonConfig {
+    web::JsonConfig::default()
+        .content_type_required(false)
+        .content_type(|_| true)
+        .error_handler(|e, _| {
+            let error = match e {
+                actix_web::error::JsonPayloadError::OverflowKnownLength { .. }
+                | actix_web::error::JsonPayloadError::Overflow { .. } => {
+                    Error::PayloadTooLarge(e.to_string())
+                }
+                e => Error::BadRequest(format!("invalid JSON body: {e}")),
+            };
+            ScimError::from(error).into()
+        })
+}
+
+/// A malformed query string, such as `?count=abc`, also answers a SCIM error document.
+fn query_config() -> web::QueryConfig {
+    web::QueryConfig::default().error_handler(|e, _| {
+        ScimError::from(Error::BadRequest(format!("invalid query: {e}"))).into()
+    })
 }
 
 /// Without this a mounted scope would fall through to the host's `default_service`, and a client
@@ -177,7 +273,9 @@ async fn scim_not_found(req: actix_web::HttpRequest) -> HttpResult {
 /// Binds `endpoint` into a handler, so that the route carries no borrow of the loop below.
 macro_rules! bind {
     ($handler:ident, $endpoint:expr $(, $arg:ident : $ty:ty)*) => {
-        move |scim: web::Data<Scim> $(, $arg: $ty)*| $handler(scim, $endpoint $(, $arg)*)
+        move |scim: web::Data<Scim<C>>, ctx: Context<C> $(, $arg: $ty)*| {
+            $handler(scim, ctx, $endpoint $(, $arg)*)
+        }
     };
 }
 
@@ -186,7 +284,11 @@ macro_rules! bind {
 /// One actix resource is registered per endpoint rather than a single `/{resourceType}` catch-all;
 /// that keeps actix's 404-versus-405 handling intact and stops the catch-all from swallowing the
 /// discovery endpoints.
-fn configure(cfg: &mut web::ServiceConfig, scim: Scim, auth: middleware::Auth) {
+fn configure<C: RequestContext>(
+    cfg: &mut web::ServiceConfig,
+    scim: Scim<C>,
+    auth: middleware::Auth,
+) {
     // Sized so that an oversized bulk body is rejected as a SCIM 413 rather than by actix's own
     // payload limit.
     let payload = match scim.config().bulk().max_payload_size {
@@ -197,16 +299,20 @@ fn configure(cfg: &mut web::ServiceConfig, scim: Scim, auth: middleware::Auth) {
     let base = scim.config().scope_path().to_owned();
     let mut scope = web::scope(&base)
         .wrap(middleware::scim(auth))
-        .service(web::resource("/ServiceProviderConfig").route(web::get().to(service_provider)))
-        .service(web::resource("/ResourceTypes").route(web::get().to(list_resource_types)))
-        .service(web::resource("/ResourceTypes/{id}").route(web::get().to(get_resource_type)))
-        .service(web::resource("/Schemas").route(web::get().to(list_schemas)))
-        .service(web::resource("/Schemas/{urn}").route(web::get().to(get_schema)))
-        .service(web::resource("/.search").route(web::post().to(search_all)))
+        .app_data(json_config())
+        .app_data(query_config())
+        .service(
+            web::resource("/ServiceProviderConfig").route(web::get().to(service_provider::<C>)),
+        )
+        .service(web::resource("/ResourceTypes").route(web::get().to(list_resource_types::<C>)))
+        .service(web::resource("/ResourceTypes/{id}").route(web::get().to(get_resource_type::<C>)))
+        .service(web::resource("/Schemas").route(web::get().to(list_schemas::<C>)))
+        .service(web::resource("/Schemas/{urn}").route(web::get().to(get_schema::<C>)))
+        .service(web::resource("/.search").route(web::post().to(search_all::<C>)))
         .service(
             web::resource("/Bulk")
                 .app_data(payload)
-                .route(web::post().to(bulk_operations)),
+                .route(web::post().to(bulk_operations::<C>)),
         );
 
     for endpoint in scim.endpoints() {
@@ -245,7 +351,7 @@ fn configure(cfg: &mut web::ServiceConfig, scim: Scim, auth: middleware::Auth) {
                         patch,
                         endpoint,
                         id: web::Path<String>,
-                        body: web::Json<serde_json::Value>
+                        op: web::Json<models::PatchOp>
                     )))
                     .route(web::delete().to(bind!(delete, endpoint, id: web::Path<String>))),
             );
@@ -260,7 +366,7 @@ fn configure(cfg: &mut web::ServiceConfig, scim: Scim, auth: middleware::Auth) {
     );
 }
 
-impl App {
+impl<C: RequestContext> App<C> {
     /// The SCIM routes, for a host that already runs its own `HttpServer`.
     ///
     /// Build it once and clone it into the per-worker factory; the returned value is cheap to
@@ -277,7 +383,7 @@ impl App {
     ///
     /// Authentication and `Accept` negotiation are part of the mount and run before the scope's own
     /// 404, so an unauthenticated request to a path inside it is a `401`, not a `404`.
-    pub fn configure(&self) -> impl Fn(&mut web::ServiceConfig) + Clone + use<> {
+    pub fn configure(&self) -> impl Fn(&mut web::ServiceConfig) + Clone + use<C> {
         // Warned about here rather than in `run()` so that a host that mounts the routes hears it
         // too - the mount is where "authentication happens somewhere else" is easiest to assume.
         match &self.auth {
@@ -314,9 +420,8 @@ impl App {
 
 /// Wraps a configured [`ScimBuilder`] with what only the HTTP layer decides: the bearer token and
 /// where the metrics go.
-#[derive(Default)]
-pub struct AppBuilder {
-    core: ScimBuilder,
+pub struct AppBuilder<C = ()> {
+    core: ScimBuilder<C>,
     bearer_token: Option<String>,
     upstream_authentication: bool,
     registry: Option<MetricsRegistry>,
@@ -325,9 +430,22 @@ pub struct AppBuilder {
     metrics_enabled: Option<bool>,
 }
 
-impl AppBuilder {
+// Not derived, because derive would demand `C: Default`.
+impl<C> Default for AppBuilder<C> {
+    fn default() -> Self {
+        Self {
+            core: ScimBuilder::default(),
+            bearer_token: None,
+            upstream_authentication: false,
+            registry: None,
+            metrics_enabled: None,
+        }
+    }
+}
+
+impl<C: RequestContext> AppBuilder<C> {
     #[must_use]
-    pub fn new(core: ScimBuilder) -> Self {
+    pub fn new(core: ScimBuilder<C>) -> Self {
         Self {
             core,
             ..Self::default()
@@ -375,7 +493,7 @@ impl AppBuilder {
     }
 
     #[must_use]
-    pub fn build(self) -> App {
+    pub fn build(self) -> App<C> {
         let mut core = self.core;
 
         if self.bearer_token.is_some() {

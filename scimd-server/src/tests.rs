@@ -66,11 +66,15 @@ impl ThingStore {
 
 #[scimd::async_trait]
 impl ResourceService<Thing> for ThingStore {
-    async fn list(&self, _filter: scimd::models::FilterQuery) -> Result<ListResponse<Thing>> {
+    async fn list(
+        &self,
+        _ctx: &(),
+        _filter: scimd::models::FilterQuery,
+    ) -> Result<ListResponse<Thing>> {
         Ok(ListResponse::new(self.things().values().cloned().collect()))
     }
 
-    async fn create(&self, mut thing: Thing) -> Result<Thing> {
+    async fn create(&self, _ctx: &(), mut thing: Thing) -> Result<Thing> {
         let id = thing.id.clone().unwrap_or_else(|| {
             let mut next = self.next.lock().expect("store is not poisoned");
             *next += 1;
@@ -85,14 +89,14 @@ impl ResourceService<Thing> for ThingStore {
         Ok(thing)
     }
 
-    async fn get(&self, id: String) -> Result<Thing> {
+    async fn get(&self, _ctx: &(), id: String) -> Result<Thing> {
         self.things()
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::NotFound(id))
     }
 
-    async fn delete(&self, id: String) -> Result<()> {
+    async fn delete(&self, _ctx: &(), id: String) -> Result<()> {
         self.things()
             .remove(&id)
             .map(|_| ())

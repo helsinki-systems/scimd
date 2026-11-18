@@ -41,7 +41,7 @@ mod tests {
         let all = [
             Error::InternalError(anyhow::anyhow!("boom")),
             Error::MethodNotImplemented,
-            Error::Conflict,
+            Error::Conflict(String::new()),
             Error::Unauthorized,
             Error::NotFound(String::new()),
             Error::BadRequest(String::new()),

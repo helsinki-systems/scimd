@@ -12,29 +12,33 @@ use scimd_types::{Error, Resource, Result};
 
 /// Every method defaults to [`Error::MethodNotImplemented`], so an implementor overrides only what
 /// their product actually supports and the rest surface as `501 Not Implemented`.
+///
+/// `C` is the request context, such as the tenant a request is for. Every method gets it, including
+/// the operations inside a `/Bulk`. It defaults to `()`. All services registered on one
+/// [`crate::ScimBuilder`] take the same `C`, and the builder infers it from them.
 #[async_trait]
-pub trait ResourceService<R: Resource>: Send + Sync {
-    async fn list(&self, _filter: FilterQuery) -> Result<ListResponse<R>> {
+pub trait ResourceService<R: Resource, C: Sync = ()>: Send + Sync {
+    async fn list(&self, _ctx: &C, _filter: FilterQuery) -> Result<ListResponse<R>> {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn create(&self, _resource: R) -> Result<R> {
+    async fn create(&self, _ctx: &C, _resource: R) -> Result<R> {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn get(&self, _id: R::Id) -> Result<R> {
+    async fn get(&self, _ctx: &C, _id: R::Id) -> Result<R> {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn replace(&self, _id: R::Id, _resource: R) -> Result<R> {
+    async fn replace(&self, _ctx: &C, _id: R::Id, _resource: R) -> Result<R> {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn patch(&self, _id: R::Id, _op: PatchOp) -> Result<ValOrEmpty<R>> {
+    async fn patch(&self, _ctx: &C, _id: R::Id, _op: PatchOp) -> Result<ValOrEmpty<R>> {
         Err(Error::MethodNotImplemented)
     }
 
-    async fn delete(&self, _id: R::Id) -> Result<()> {
+    async fn delete(&self, _ctx: &C, _id: R::Id) -> Result<()> {
         Err(Error::MethodNotImplemented)
     }
 
@@ -49,19 +53,19 @@ pub trait ResourceService<R: Resource>: Send + Sync {
 /// live in one registry. Identity crosses the boundary as `&str` and payloads as [`Value`]; `base`
 /// is what `meta.location` is written relative to.
 #[async_trait]
-pub(crate) trait ErasedHandler: Send + Sync {
+pub(crate) trait ErasedHandler<C>: Send + Sync {
     fn endpoint(&self) -> &'static str;
     fn resource_type(&self) -> &'static str;
     fn schema_urn(&self) -> &'static str;
     fn schema(&self) -> Schema;
     fn extensions(&self) -> Vec<Extension>;
 
-    async fn list(&self, base: &str, filter: FilterQuery) -> Result<Value>;
-    async fn create(&self, base: &str, body: Value) -> Result<Value>;
-    async fn get(&self, base: &str, id: &str) -> Result<Value>;
-    async fn replace(&self, base: &str, id: &str, body: Value) -> Result<Value>;
-    async fn patch(&self, base: &str, id: &str, op: PatchOp) -> Result<Option<Value>>;
-    async fn delete(&self, id: &str) -> Result<()>;
+    async fn list(&self, ctx: &C, base: &str, filter: FilterQuery) -> Result<Value>;
+    async fn create(&self, ctx: &C, base: &str, body: Value) -> Result<Value>;
+    async fn get(&self, ctx: &C, base: &str, id: &str) -> Result<Value>;
+    async fn replace(&self, ctx: &C, base: &str, id: &str, body: Value) -> Result<Value>;
+    async fn patch(&self, ctx: &C, base: &str, id: &str, op: PatchOp) -> Result<Option<Value>>;
+    async fn delete(&self, ctx: &C, id: &str) -> Result<()>;
 }
 
 pub(crate) struct TypedHandler<R, S> {
@@ -161,10 +165,11 @@ pub(crate) fn to_body<T: serde::Serialize>(value: &T) -> Result<Value> {
 }
 
 #[async_trait]
-impl<R, S> ErasedHandler for TypedHandler<R, S>
+impl<R, S, C> ErasedHandler<C> for TypedHandler<R, S>
 where
     R: Resource,
-    S: ResourceService<R>,
+    S: ResourceService<R, C>,
+    C: Sync,
 {
     fn endpoint(&self) -> &'static str {
         R::ENDPOINT
@@ -186,8 +191,8 @@ where
         R::extensions()
     }
 
-    async fn list(&self, base: &str, filter: FilterQuery) -> Result<Value> {
-        let mut list = self.service.list(filter).await?;
+    async fn list(&self, ctx: &C, base: &str, filter: FilterQuery) -> Result<Value> {
+        let mut list = self.service.list(ctx, filter).await?;
         for resource in &mut list.resources {
             finalize(resource, base);
         }
@@ -200,32 +205,32 @@ where
         Ok(value)
     }
 
-    async fn create(&self, base: &str, body: Value) -> Result<Value> {
-        let mut created = self.service.create(from_body::<R>(body)?).await?;
+    async fn create(&self, ctx: &C, base: &str, body: Value) -> Result<Value> {
+        let mut created = self.service.create(ctx, from_body::<R>(body)?).await?;
         self.body(base, &mut created)
     }
 
-    async fn get(&self, base: &str, id: &str) -> Result<Value> {
-        let mut resource = self.service.get(parse_id::<R>(id)?).await?;
+    async fn get(&self, ctx: &C, base: &str, id: &str) -> Result<Value> {
+        let mut resource = self.service.get(ctx, parse_id::<R>(id)?).await?;
         self.body(base, &mut resource)
     }
 
-    async fn replace(&self, base: &str, id: &str, body: Value) -> Result<Value> {
+    async fn replace(&self, ctx: &C, base: &str, id: &str, body: Value) -> Result<Value> {
         let mut replaced = self
             .service
-            .replace(parse_id::<R>(id)?, from_body::<R>(body)?)
+            .replace(ctx, parse_id::<R>(id)?, from_body::<R>(body)?)
             .await?;
         self.body(base, &mut replaced)
     }
 
-    async fn patch(&self, base: &str, id: &str, op: PatchOp) -> Result<Option<Value>> {
-        match self.service.patch(parse_id::<R>(id)?, op).await? {
+    async fn patch(&self, ctx: &C, base: &str, id: &str, op: PatchOp) -> Result<Option<Value>> {
+        match self.service.patch(ctx, parse_id::<R>(id)?, op).await? {
             ValOrEmpty::Val(mut patched) => Ok(Some(self.body(base, &mut patched)?)),
             ValOrEmpty::Empty => Ok(None),
         }
     }
 
-    async fn delete(&self, id: &str) -> Result<()> {
-        self.service.delete(parse_id::<R>(id)?).await
+    async fn delete(&self, ctx: &C, id: &str) -> Result<()> {
+        self.service.delete(ctx, parse_id::<R>(id)?).await
     }
 }

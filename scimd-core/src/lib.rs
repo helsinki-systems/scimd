@@ -10,7 +10,7 @@
 //! let scim = scimd_core::ScimBuilder::new()
 //!     .register::<scimd_core::models::User, _>(svc)
 //!     .build();
-//! let users = scim.list("/Users", Default::default()).await?;
+//! let users = scim.list(&(), "/Users", Default::default()).await?;
 //! # Ok(()) }
 //! ```
 
@@ -41,7 +41,7 @@ use resource::ErasedHandler;
 /// Keyed by [`Resource::ENDPOINT`], and ordered so that `/ResourceTypes` and `/Schemas` render
 /// deterministically. The `&'static str` key is what lets a route closure an adapter builds from
 /// [`Scim::endpoints`] be `'static`.
-type Registry = BTreeMap<&'static str, Arc<dyn ErasedHandler>>;
+type Registry<C> = BTreeMap<&'static str, Arc<dyn ErasedHandler<C>>>;
 
 /// What this server supports, as `/ServiceProviderConfig` advertises it and as the operations
 /// enforce it.
@@ -95,14 +95,33 @@ fn normalise_path(path: &str) -> Option<String> {
     Some(format!("/{}", segments.join("/")))
 }
 
-#[derive(Clone)]
-pub struct Scim {
-    handlers: Arc<Registry>,
+/// A location base is a path, normalised like one, or an absolute URI without its trailing slash.
+fn normalise_location_base(base: &str) -> Option<String> {
+    let base = base.trim();
+    if base.contains("://") {
+        return Some(base.trim_end_matches('/').to_owned());
+    }
+    normalise_path(base)
+}
+
+pub struct Scim<C = ()> {
+    handlers: Arc<Registry<C>>,
     config: Arc<ScimConfig>,
     metrics: Option<Arc<ScimMetrics>>,
 }
 
-impl Scim {
+// Not derived, because derive would demand `C: Clone` though only `Arc`s are cloned.
+impl<C> Clone for Scim<C> {
+    fn clone(&self) -> Self {
+        Self {
+            handlers: self.handlers.clone(),
+            config: self.config.clone(),
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+impl<C: Sync> Scim<C> {
     #[must_use]
     pub fn config(&self) -> &ScimConfig {
         &self.config
@@ -122,7 +141,7 @@ impl Scim {
 
     /// Routes are only ever built from [`Self::endpoints`], so a miss means the two went out of
     /// sync - a bug, not a bad request.
-    fn handler(&self, endpoint: &str) -> Result<&dyn ErasedHandler> {
+    fn handler(&self, endpoint: &str) -> Result<&dyn ErasedHandler<C>> {
         self.handlers.get(endpoint).map(Arc::as_ref).ok_or_else(|| {
             Error::InternalError(anyhow::anyhow!(
                 "no handler registered for endpoint {endpoint}"
@@ -132,7 +151,7 @@ impl Scim {
 
     async fn observe<T>(
         &self,
-        handler: &dyn ErasedHandler,
+        handler: &dyn ErasedHandler<C>,
         operation: Operation,
         source: Source,
         call: impl Future<Output = Result<T>>,
@@ -170,17 +189,18 @@ impl Scim {
     /// [`Error::InvalidFilter`] if the query carries a filter while filtering is not enabled, else
     /// whatever the [`ResourceService`] answers, or [`Error::MethodNotImplemented`] if it does not
     /// implement `list`.
-    pub async fn list(&self, endpoint: &str, query: FilterQuery) -> Result<Value> {
-        self.list_as(endpoint, query, Operation::List).await
+    pub async fn list(&self, ctx: &C, endpoint: &str, query: FilterQuery) -> Result<Value> {
+        self.list_as(ctx, endpoint, query, Operation::List).await
     }
 
     /// `POST {endpoint}/.search` - the same query as [`Self::list`], counted apart from it.
-    pub async fn search(&self, endpoint: &str, query: FilterQuery) -> Result<Value> {
-        self.list_as(endpoint, query, Operation::Search).await
+    pub async fn search(&self, ctx: &C, endpoint: &str, query: FilterQuery) -> Result<Value> {
+        self.list_as(ctx, endpoint, query, Operation::Search).await
     }
 
     async fn list_as(
         &self,
+        ctx: &C,
         endpoint: &str,
         query: FilterQuery,
         operation: Operation,
@@ -191,7 +211,7 @@ impl Scim {
             handler,
             operation,
             Source::Http,
-            handler.list(self.base(), query),
+            handler.list(ctx, self.base(), query),
         )
         .await
     }
@@ -200,13 +220,13 @@ impl Scim {
     ///
     /// [`Error::BadRequest`] if `body` is not a valid resource of this type, else whatever the
     /// [`ResourceService`] answers.
-    pub async fn create(&self, endpoint: &str, body: Value) -> Result<Value> {
+    pub async fn create(&self, ctx: &C, endpoint: &str, body: Value) -> Result<Value> {
         let handler = self.handler(endpoint)?;
         self.observe(
             handler,
             Operation::Create,
             Source::Http,
-            handler.create(self.base(), body),
+            handler.create(ctx, self.base(), body),
         )
         .await
     }
@@ -215,40 +235,47 @@ impl Scim {
     ///
     /// [`Error::BadRequest`] if `id` does not parse as this resource type's id, else whatever the
     /// [`ResourceService`] answers.
-    pub async fn get(&self, endpoint: &str, id: &str) -> Result<Value> {
+    pub async fn get(&self, ctx: &C, endpoint: &str, id: &str) -> Result<Value> {
         let handler = self.handler(endpoint)?;
         self.observe(
             handler,
             Operation::Get,
             Source::Http,
-            handler.get(self.base(), id),
+            handler.get(ctx, self.base(), id),
         )
         .await
     }
 
-    pub async fn replace(&self, endpoint: &str, id: &str, body: Value) -> Result<Value> {
+    pub async fn replace(&self, ctx: &C, endpoint: &str, id: &str, body: Value) -> Result<Value> {
         let handler = self.handler(endpoint)?;
-        let call = handler.replace(self.base(), id, body);
+        let call = handler.replace(ctx, self.base(), id, body);
         self.observe(handler, Operation::Replace, Source::Http, call)
             .await
     }
 
     /// `Ok(None)` when the service applied the patch but chose not to return the resource, which
     /// RFC 7644 section 3.5.2 answers with a `204`.
-    pub async fn patch(&self, endpoint: &str, id: &str, op: PatchOp) -> Result<Option<Value>> {
+    pub async fn patch(
+        &self,
+        ctx: &C,
+        endpoint: &str,
+        id: &str,
+        op: PatchOp,
+    ) -> Result<Option<Value>> {
         let handler = self.handler(endpoint)?;
         self.observe(
             handler,
             Operation::Patch,
             Source::Http,
-            handler.patch(self.base(), id, op),
+            handler.patch(ctx, self.base(), id, op),
         )
         .await
     }
 
-    pub async fn delete(&self, endpoint: &str, id: &str) -> Result<()> {
+    pub async fn delete(&self, ctx: &C, endpoint: &str, id: &str) -> Result<()> {
         let handler = self.handler(endpoint)?;
-        self.observe(handler, Operation::Delete, Source::Http, handler.delete(id))
+        let call = handler.delete(ctx, id);
+        self.observe(handler, Operation::Delete, Source::Http, call)
             .await
     }
 
@@ -263,13 +290,13 @@ impl Scim {
     ///
     /// Whatever a service answers other than [`Error::MethodNotImplemented`], which is skipped: a
     /// resource type that does not support listing simply contributes nothing.
-    pub async fn search_all(&self, query: FilterQuery) -> Result<Value> {
+    pub async fn search_all(&self, ctx: &C, query: FilterQuery) -> Result<Value> {
         self.refuse_unsupported_filter(&query)?;
         // `join_all` queries every backend at once and keeps registry order. The metrics count each
         // call before the skip below, because a resource type that cannot list is still worth
         // counting.
         let answers = join_all(self.handlers.values().map(|handler| {
-            let call = handler.list(self.base(), query.clone());
+            let call = handler.list(ctx, self.base(), query.clone());
             self.observe(&**handler, Operation::Search, Source::Http, call)
         }))
         .await;
@@ -310,7 +337,7 @@ impl Scim {
     ///
     /// [`Error::MethodNotImplemented`] if bulk is not enabled, [`Error::PayloadTooLarge`] past
     /// `maxPayloadSize`, [`Error::BadRequest`] if the body is not a `BulkRequest`.
-    pub async fn bulk_bytes(&self, body: &[u8]) -> Result<BulkResponse> {
+    pub async fn bulk_bytes(&self, ctx: &C, body: &[u8]) -> Result<BulkResponse> {
         if !self.config.bulk.supported {
             return Err(Error::MethodNotImplemented);
         }
@@ -324,7 +351,7 @@ impl Scim {
         }
         let request: BulkRequest = serde_json::from_slice(body)
             .map_err(|e| Error::BadRequest(format!("invalid BulkRequest: {e}")))?;
-        self.bulk(request).await
+        self.bulk(ctx, request).await
     }
 
     /// `POST /Bulk` from an already-parsed request, for an adapter that does its own
@@ -335,11 +362,11 @@ impl Scim {
     /// [`Error::MethodNotImplemented`] if bulk is not enabled, [`Error::PayloadTooLarge`] past
     /// `maxOperations`. A failing *operation* is reported inside the response rather than as an
     /// error.
-    pub async fn bulk(&self, request: BulkRequest) -> Result<BulkResponse> {
+    pub async fn bulk(&self, ctx: &C, request: BulkRequest) -> Result<BulkResponse> {
         if !self.config.bulk.supported {
             return Err(Error::MethodNotImplemented);
         }
-        bulk::execute(self, request).await
+        bulk::execute(self, ctx, request).await
     }
 
     #[must_use]
@@ -363,7 +390,7 @@ impl Scim {
             .ok_or_else(|| Error::NotFound(id.to_owned()))
     }
 
-    fn resource_type_of(&self, handler: &Arc<dyn ErasedHandler>) -> ResourceType {
+    fn resource_type_of(&self, handler: &Arc<dyn ErasedHandler<C>>) -> ResourceType {
         ResourceType::new(
             handler.resource_type(),
             handler.endpoint(),
@@ -419,14 +446,24 @@ impl Scim {
     }
 }
 
-#[derive(Default)]
-pub struct ScimBuilder {
-    handlers: Registry,
+pub struct ScimBuilder<C = ()> {
+    handlers: Registry<C>,
     config: ScimConfig,
     metrics: Option<Arc<ScimMetrics>>,
 }
 
-impl ScimBuilder {
+// Not derived, because derive would demand `C: Default`.
+impl<C> Default for ScimBuilder<C> {
+    fn default() -> Self {
+        Self {
+            handlers: Registry::new(),
+            config: ScimConfig::default(),
+            metrics: None,
+        }
+    }
+}
+
+impl<C: Sync> ScimBuilder<C> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -439,7 +476,7 @@ impl ScimBuilder {
     pub fn register<R, S>(mut self, service: S) -> Self
     where
         R: Resource,
-        S: ResourceService<R> + 'static,
+        S: ResourceService<R, C> + 'static,
     {
         let handler = Arc::new(resource::TypedHandler::new(service));
         if self.handlers.insert(R::ENDPOINT, handler).is_some() {
@@ -472,12 +509,15 @@ impl ScimBuilder {
     /// Overrides only the prefix `meta.location` is written relative to, for a host that mounts the
     /// routes inside a scope of its own: the adapter registers under [`Self::base_path`], but a
     /// client sees the host's prefix in front of it.
+    ///
+    /// A base with a scheme, such as `https://mail.example.com/scim/v2`, is kept as given apart
+    /// from a trailing slash. Every published location is then an absolute URI.
     #[must_use]
-    pub fn location_base(mut self, path: &str) -> Self {
-        match normalise_path(path) {
-            Some(path) => self.config.location_base = path,
+    pub fn location_base(mut self, base: &str) -> Self {
+        match normalise_location_base(base) {
+            Some(base) => self.config.location_base = base,
             None => tracing::warn!(
-                "'{path}' is not a usable location base - keeping {}",
+                "'{base}' is not a usable location base, keeping {}",
                 self.config.location_base
             ),
         }
@@ -534,7 +574,7 @@ impl ScimBuilder {
     }
 
     #[must_use]
-    pub fn build(self) -> Scim {
+    pub fn build(self) -> Scim<C> {
         if let Some(metrics) = &self.metrics {
             metrics.set_resource_types(self.handlers.len());
         }

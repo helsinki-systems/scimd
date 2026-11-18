@@ -109,12 +109,12 @@ impl DeviceService {
 
 #[scimd::async_trait]
 impl ResourceService<Device> for DeviceService {
-    async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
+    async fn list(&self, _ctx: &(), query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
         let devices = self.devices().values().cloned().collect();
         scimd::filter::list_response(devices, &query)
     }
 
-    async fn create(&self, mut device: Device) -> scimd::Result<Device> {
+    async fn create(&self, _ctx: &(), mut device: Device) -> scimd::Result<Device> {
         let id = device.id.unwrap_or_else(uuid::Uuid::new_v4);
         device.id = Some(id);
         self.devices().insert(id, device.clone());
@@ -122,14 +122,19 @@ impl ResourceService<Device> for DeviceService {
         Ok(device)
     }
 
-    async fn get(&self, id: uuid::Uuid) -> scimd::Result<Device> {
+    async fn get(&self, _ctx: &(), id: uuid::Uuid) -> scimd::Result<Device> {
         self.devices()
             .get(&id)
             .cloned()
             .ok_or_else(|| scimd::Error::NotFound(id.to_string()))
     }
 
-    async fn replace(&self, id: uuid::Uuid, mut device: Device) -> scimd::Result<Device> {
+    async fn replace(
+        &self,
+        _ctx: &(),
+        id: uuid::Uuid,
+        mut device: Device,
+    ) -> scimd::Result<Device> {
         let mut devices = self.devices();
         if !devices.contains_key(&id) {
             return Err(scimd::Error::NotFound(id.to_string()));
@@ -139,7 +144,7 @@ impl ResourceService<Device> for DeviceService {
         Ok(device)
     }
 
-    async fn delete(&self, id: uuid::Uuid) -> scimd::Result<()> {
+    async fn delete(&self, _ctx: &(), id: uuid::Uuid) -> scimd::Result<()> {
         self.devices()
             .remove(&id)
             .map(|_| ())

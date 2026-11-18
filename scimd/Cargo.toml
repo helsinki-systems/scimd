@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 actix-web.workspace = true
+anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 prometheus.workspace = true
@@ -20,5 +21,4 @@ scimd-core.workspace = true
 scimd-types.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }

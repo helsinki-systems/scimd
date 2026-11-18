@@ -75,7 +75,7 @@ impl ThingStore {
 
 #[crate::async_trait]
 impl ResourceService<Thing> for ThingStore {
-    async fn list(&self, filter: FilterQuery) -> Result<ListResponse<Thing>> {
+    async fn list(&self, _ctx: &(), filter: FilterQuery) -> Result<ListResponse<Thing>> {
         let things: Vec<Thing> = self.things().values().cloned().collect();
         let total = things.len();
         let paginate = filter.start_index.is_some() || filter.count.is_some();
@@ -93,7 +93,7 @@ impl ResourceService<Thing> for ThingStore {
         }
     }
 
-    async fn create(&self, mut thing: Thing) -> Result<Thing> {
+    async fn create(&self, _ctx: &(), mut thing: Thing) -> Result<Thing> {
         let id = thing.id.unwrap_or_else(Uuid::new_v4);
         thing.id = Some(id);
         thing.meta = Some(Meta {
@@ -104,14 +104,14 @@ impl ResourceService<Thing> for ThingStore {
         Ok(thing)
     }
 
-    async fn get(&self, id: Uuid) -> Result<Thing> {
+    async fn get(&self, _ctx: &(), id: Uuid) -> Result<Thing> {
         self.things()
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
-    async fn replace(&self, id: Uuid, mut thing: Thing) -> Result<Thing> {
+    async fn replace(&self, _ctx: &(), id: Uuid, mut thing: Thing) -> Result<Thing> {
         let mut things = self.things();
         if !things.contains_key(&id) {
             return Err(Error::NotFound(id.to_string()));
@@ -121,7 +121,7 @@ impl ResourceService<Thing> for ThingStore {
         Ok(thing)
     }
 
-    async fn patch(&self, id: Uuid, op: PatchOp) -> Result<ValOrEmpty<Thing>> {
+    async fn patch(&self, _ctx: &(), id: Uuid, op: PatchOp) -> Result<ValOrEmpty<Thing>> {
         let mut things = self.things();
         let thing = things
             .get_mut(&id)
@@ -140,7 +140,7 @@ impl ResourceService<Thing> for ThingStore {
         }
     }
 
-    async fn delete(&self, id: Uuid) -> Result<()> {
+    async fn delete(&self, _ctx: &(), id: Uuid) -> Result<()> {
         self.things()
             .remove(&id)
             .map(|_| ())
@@ -442,6 +442,35 @@ async fn malformed_payload_is_a_scim_bad_request() {
 }
 
 #[actix_web::test]
+async fn any_content_type_is_read_as_json_and_bad_input_is_a_scim_error() {
+    let app = test_app!(thing_app());
+    let body = serde_json::to_string(&Thing::new("plain")).unwrap();
+
+    let plain = request(Method::POST, "/v2/Things")
+        .insert_header((header::CONTENT_TYPE, "text/plain"))
+        .set_payload(body.clone());
+    let none = request(Method::POST, "/v2/Things").set_payload(body);
+    for req in [plain, none] {
+        let resp = actix_test::call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let bad_json = request(Method::POST, "/v2/Things")
+        .insert_header((header::CONTENT_TYPE, "application/scim+json"))
+        .set_payload("{not json");
+    let bad_query = request(Method::GET, "/v2/Things?count=abc");
+    for req in [bad_json, bad_query] {
+        let resp = actix_test::call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = actix_test::read_body_json(resp).await;
+        assert_eq!(
+            body["status"], "400",
+            "a SCIM error document, not actix's plain text"
+        );
+    }
+}
+
+#[actix_web::test]
 async fn patch_maps_val_to_200_and_empty_to_204() {
     let app = test_app!(thing_app());
 
@@ -644,7 +673,7 @@ struct OneUserService {
 
 #[crate::async_trait]
 impl ResourceService<User> for OneUserService {
-    async fn get(&self, _id: String) -> Result<User> {
+    async fn get(&self, _ctx: &(), _id: String) -> Result<User> {
         self.user
             .lock()
             .expect("store is not poisoned")
@@ -1412,6 +1441,37 @@ mod mount {
     }
 
     #[actix_web::test]
+    async fn an_absolute_location_base_publishes_absolute_uris() {
+        let base = "https://mail.example.com/scim/v2";
+        let routes = AppBuilder::new(thing_core().location_base(&format!("{base}/")))
+            .build()
+            .configure();
+        let app = actix_test::init_service(actix_web::App::new().configure(routes)).await;
+
+        let created: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new("absolute"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            created["meta"]["location"],
+            format!("{base}/Things/{}", created["id"].as_str().unwrap())
+        );
+
+        let resource_type: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::GET, "/v2/ResourceTypes/Thing").to_request(),
+        )
+        .await;
+        assert_eq!(
+            resource_type["meta"]["location"],
+            format!("{base}/ResourceTypes/Thing")
+        );
+    }
+
+    #[actix_web::test]
     async fn mounting_inside_a_host_scope_does_not_disturb_it() {
         let routes = AppBuilder::new(thing_core().location_base("/scim/v2"))
             .bearer_token(Some("s3cret".to_owned()))
@@ -1577,6 +1637,96 @@ mod mount {
         assert_eq!(
             actix_test::read_body(outside).await,
             "<html>the host's 404</html>"
+        );
+    }
+}
+
+mod context {
+    use std::sync::{Arc, Mutex};
+
+    use actix_web::HttpMessage as _;
+    use actix_web::dev::Service as _;
+
+    use super::{
+        AppBuilder, Method, ScimBuilder, StatusCode, Thing, actix_test, bulk_request, request,
+    };
+    use crate::Resource as _;
+    use crate::{RequestContext, ResourceService, Result};
+
+    /// What a host's middleware resolves, e.g. from the token.
+    #[derive(Clone)]
+    struct Tenant(&'static str);
+
+    impl RequestContext for Tenant {}
+
+    #[derive(Default)]
+    struct TenantThings {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[crate::async_trait]
+    impl ResourceService<Thing, Tenant> for TenantThings {
+        async fn create(&self, tenant: &Tenant, mut thing: Thing) -> Result<Thing> {
+            self.seen.lock().unwrap().push(tenant.0);
+            thing.id = Some(uuid::Uuid::new_v4());
+            Ok(thing)
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_service_gets_the_context_the_host_put_into_the_request() {
+        let service = TenantThings::default();
+        let seen = service.seen.clone();
+        let core = ScimBuilder::new()
+            .register::<Thing, _>(service)
+            .with_bulk(true, None, None);
+        let routes = AppBuilder::new(core)
+            .authentication_handled_upstream(true)
+            .build()
+            .configure();
+        let app = actix_test::init_service(
+            actix_web::App::new()
+                .wrap_fn(|req, srv| {
+                    req.extensions_mut().insert(Tenant("acme"));
+                    srv.call(req)
+                })
+                .configure(routes.clone()),
+        )
+        .await;
+
+        let created = actix_test::call_service(
+            &app,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new("direct"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let bulk: serde_json::Value = actix_test::call_and_read_body_json(
+            &app,
+            request(Method::POST, "/v2/Bulk")
+                .set_json(bulk_request(serde_json::json!([
+                    {"method": "POST", "path": "/Things",
+                     "data": {"schemas": [Thing::SCHEMA], "displayName": "batched"}},
+                ])))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(bulk["Operations"][0]["status"], "201");
+        assert_eq!(*seen.lock().unwrap(), ["acme", "acme"]);
+
+        let without = actix_test::init_service(actix_web::App::new().configure(routes)).await;
+        let refused = actix_test::call_service(
+            &without,
+            request(Method::POST, "/v2/Things")
+                .set_json(Thing::new("orphan"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a host that forgot its middleware has a bug, not a client"
         );
     }
 }

@@ -25,6 +25,19 @@ Every method of `ResourceService` defaults to returning `MethodNotImplemented`, 
 the operations your product supports - the rest answer `501` on their own. `User` and `Group` ship
 with scimd as the two resource types RFC 7643 predefines; see `example/` for a custom one.
 
+Every method also takes a request context first. It is `&()` unless the host provides one (see
+[mounting](#mounting-into-a-server-you-already-have)):
+
+```rust
+#[scimd::async_trait]
+impl ResourceService<User> for UserService {
+    async fn get(&self, _ctx: &(), id: String) -> scimd::Result<User> { /* ... */ }
+}
+```
+
+A uniqueness violation, such as a `userName` that is already taken, is `Error::Conflict("...")`.
+It answers a `409` with `scimType: uniqueness` and your string as the detail.
+
 ### Mounting into a server you already have
 
 `scimd_server::Server` above binds its own sockets. A backend that already runs an actix-web
@@ -56,11 +69,30 @@ the default and says where a client actually sees it:
 .service(web::scope("/scim").configure(scim_routes.clone()))
 ```
 
+A base with a scheme, such as `.location_base("https://mail.example.com/scim/v2")`, is kept as
+given, so every published location is an absolute URI.
+
 Authentication and `Accept` negotiation are scoped to the mount. Leaving `bearer_token` unset does
 not mean "unauthenticated": a request presenting a token anyway is refused, since a token nobody
 asked for says the client thinks it is talking to something else. A host whose own middleware
 already checked says `.authentication_handled_upstream(true)` instead, and then scimd does not read
 the header at all.
+
+A service that needs to know which tenant a request is for implements
+`ResourceService<User, Tenant>`. The host's middleware puts the `Tenant` into the request
+extensions, and scimd hands it to the service:
+
+```rust
+#[derive(Clone)]
+struct Tenant(TenantId);
+impl scimd::RequestContext for Tenant {}
+
+// In the host's middleware, after it has checked the token:
+req.extensions_mut().insert(Tenant(tenant_id));
+```
+
+Such a host mounts scimd with `.authentication_handled_upstream(true)`. A request that reaches the
+mount without a `Tenant` answers a `500`.
 
 A path inside the scope that matches no route answers a SCIM error document rather than falling
 through to the host's 404, and authentication runs first, so an unauthenticated request there is a
@@ -68,6 +100,9 @@ through to the host's 404, and authentication runs first, so an unauthenticated 
 
 A mount does not bring `/health`, `/metrics` or `NormalizePath` - they are the host's to place, so
 a trailing slash 404s unless the host wraps it.
+
+A body is read as JSON whatever its `Content-Type`, because some IdPs send none or `text/plain`. A
+body or query string that does not parse answers a SCIM `400` rather than actix's plain text.
 
 `example-mounted/` is a working host: `cargo run -p example-mounted`.
 
@@ -147,7 +182,7 @@ the values an operation names. It reads them from the operation's value, or else
 service that holds its collection whole lets scimd filter and page it:
 
 ```rust
-async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
+async fn list(&self, _ctx: &(), query: FilterQuery) -> scimd::Result<ListResponse<Device>> {
     scimd::filter::list_response(self.all_devices(), &query)  // filter, then startIndex/count
 }
 ```

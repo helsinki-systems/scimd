@@ -114,7 +114,13 @@ fn id_of(resource: &Value) -> Option<String> {
     }
 }
 
-async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Result<Applied> {
+async fn apply<C: Sync>(
+    scim: &Scim<C>,
+    ctx: &C,
+    method: &str,
+    path: &str,
+    data: Option<Value>,
+) -> Result<Applied> {
     let (endpoint, id) = split_path(path)
         .ok_or_else(|| Error::BadRequest(format!("'{path}' is not a resource path")))?;
     // Not `Scim::handler`: a batch names its own paths, so an endpoint that does not exist is the
@@ -128,7 +134,7 @@ async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Re
 
     match (method.to_ascii_uppercase().as_str(), id) {
         ("POST", None) => {
-            let call = handler.create(scim.base(), body()?);
+            let call = handler.create(ctx, scim.base(), body()?);
             let created = scim
                 .observe(handler, Operation::Create, Source::Bulk, call)
                 .await?;
@@ -138,7 +144,7 @@ async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Re
             })
         }
         ("PUT", Some(id)) => {
-            let call = handler.replace(scim.base(), id, body()?);
+            let call = handler.replace(ctx, scim.base(), id, body()?);
             let replaced = scim
                 .observe(handler, Operation::Replace, Source::Bulk, call)
                 .await?;
@@ -147,7 +153,7 @@ async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Re
         ("PATCH", Some(id)) => {
             let op = serde_json::from_value(body()?)
                 .map_err(|e| Error::BadRequest(format!("invalid PatchOp: {e}")))?;
-            let call = handler.patch(scim.base(), id, op);
+            let call = handler.patch(ctx, scim.base(), id, op);
             let patched = scim
                 .observe(handler, Operation::Patch, Source::Bulk, call)
                 .await?;
@@ -159,7 +165,8 @@ async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Re
             Ok(Applied::new(status, patched.as_ref()))
         }
         ("DELETE", Some(id)) => {
-            scim.observe(handler, Operation::Delete, Source::Bulk, handler.delete(id))
+            let call = handler.delete(ctx, id);
+            scim.observe(handler, Operation::Delete, Source::Bulk, call)
                 .await?;
             Ok(Applied::new(StatusCode::NO_CONTENT, None))
         }
@@ -172,7 +179,11 @@ async fn apply(scim: &Scim, method: &str, path: &str, data: Option<Value>) -> Re
 /// Runs a batch. Operations are applied in the order given and a failing one never aborts the
 /// rest - it is reported with its own status and error document - unless `failOnErrors` says
 /// otherwise.
-pub(crate) async fn execute(scim: &Scim, request: BulkRequest) -> Result<BulkResponse> {
+pub(crate) async fn execute<C: Sync>(
+    scim: &Scim<C>,
+    ctx: &C,
+    request: BulkRequest,
+) -> Result<BulkResponse> {
     if let Some(max) = scim.config().bulk().max_operations
         && request.operations.len() > max as usize
     {
@@ -190,7 +201,7 @@ pub(crate) async fn execute(scim: &Scim, request: BulkRequest) -> Result<BulkRes
     let mut failures = 0;
 
     for mut operation in request.operations {
-        let outcome = resolve_operation(scim, &mut operation, &ids).await;
+        let outcome = resolve_operation(scim, ctx, &mut operation, &ids).await;
 
         let result = BulkOperationResult::new(
             &operation.method,
@@ -228,8 +239,9 @@ pub(crate) async fn execute(scim: &Scim, request: BulkRequest) -> Result<BulkRes
 
 /// Substitution has to happen per operation rather than up front, because the map only fills in as
 /// earlier operations complete. Takes the operation's `data` rather than copying it.
-async fn resolve_operation(
-    scim: &Scim,
+async fn resolve_operation<C: Sync>(
+    scim: &Scim<C>,
+    ctx: &C,
     operation: &mut BulkOperation,
     ids: &HashMap<String, String>,
 ) -> Result<Applied> {
@@ -240,7 +252,7 @@ async fn resolve_operation(
         .map(|mut data| resolve_in_value(&mut data, ids).map(|()| data))
         .transpose()?;
 
-    apply(scim, &operation.method, &path, data).await
+    apply(scim, ctx, &operation.method, &path, data).await
 }
 
 #[cfg(test)]

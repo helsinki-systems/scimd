@@ -91,18 +91,21 @@ fn log_activation(user: &MailUser) {
 
 #[scimd::async_trait]
 impl ResourceService<MailUser> for MailUsers {
-    async fn list(&self, query: FilterQuery) -> scimd::Result<ListResponse<MailUser>> {
+    async fn list(&self, _ctx: &(), query: FilterQuery) -> scimd::Result<ListResponse<MailUser>> {
         let users = self.users().values().cloned().collect();
         scimd::filter::list_response(users, &query)
     }
 
-    async fn create(&self, mut user: MailUser) -> scimd::Result<MailUser> {
+    async fn create(&self, _ctx: &(), mut user: MailUser) -> scimd::Result<MailUser> {
         let mut users = self.users();
         if users
             .values()
             .any(|u| u.user.user_name.eq_ignore_ascii_case(&user.user.user_name))
         {
-            return Err(scimd::Error::Conflict);
+            return Err(scimd::Error::Conflict(format!(
+                "the userName {} is taken",
+                user.user.user_name
+            )));
         }
         let id = uuid::Uuid::new_v4().to_string();
         user.user.id = Some(id.clone());
@@ -113,14 +116,14 @@ impl ResourceService<MailUser> for MailUsers {
         Ok(user)
     }
 
-    async fn get(&self, id: String) -> scimd::Result<MailUser> {
+    async fn get(&self, _ctx: &(), id: String) -> scimd::Result<MailUser> {
         self.users()
             .get(&id)
             .cloned()
             .ok_or(scimd::Error::NotFound(id))
     }
 
-    async fn replace(&self, id: String, mut user: MailUser) -> scimd::Result<MailUser> {
+    async fn replace(&self, _ctx: &(), id: String, mut user: MailUser) -> scimd::Result<MailUser> {
         let mut users = self.users();
         let current = users
             .get_mut(&id)
@@ -134,7 +137,12 @@ impl ResourceService<MailUser> for MailUsers {
         Ok(user)
     }
 
-    async fn patch(&self, id: String, op: PatchOp) -> scimd::Result<ValOrEmpty<MailUser>> {
+    async fn patch(
+        &self,
+        _ctx: &(),
+        id: String,
+        op: PatchOp,
+    ) -> scimd::Result<ValOrEmpty<MailUser>> {
         let mut users = self.users();
         let user = users
             .get_mut(&id)
@@ -160,7 +168,7 @@ impl ResourceService<MailUser> for MailUsers {
         Ok(ValOrEmpty::Val(user.clone()))
     }
 
-    async fn delete(&self, id: String) -> scimd::Result<()> {
+    async fn delete(&self, _ctx: &(), id: String) -> scimd::Result<()> {
         let user = self.users().remove(&id).ok_or(scimd::Error::NotFound(id))?;
         tracing::info!("deleted mailbox of {}", user.user.user_name);
         Ok(())
@@ -198,19 +206,19 @@ mod tests {
     #[tokio::test]
     async fn the_mailbox_follows_the_user_lifecycle() {
         let service = MailUsers::default();
-        let id = service.create(jdoe()).await.unwrap().user.id.unwrap();
+        let id = service.create(&(), jdoe()).await.unwrap().user.id.unwrap();
         assert!(matches!(
-            service.create(jdoe()).await,
-            Err(scimd::Error::Conflict)
+            service.create(&(), jdoe()).await,
+            Err(scimd::Error::Conflict(_))
         ));
 
         let suspend = patch(vec![Operation::replace(
             "active".into(),
             Some(serde_json::json!(false)),
         )]);
-        service.patch(id.clone(), suspend).await.unwrap();
+        service.patch(&(), id.clone(), suspend).await.unwrap();
         assert_eq!(
-            service.get(id.clone()).await.unwrap().user.active,
+            service.get(&(), id.clone()).await.unwrap().user.active,
             Some(false)
         );
 
@@ -218,13 +226,13 @@ mod tests {
             format!("{}:quota", Mailbox::SCHEMA),
             Some(serde_json::json!(2048)),
         )]);
-        service.patch(id.clone(), quota).await.unwrap();
-        let mailbox = service.get(id.clone()).await.unwrap().mailbox.unwrap();
+        service.patch(&(), id.clone(), quota).await.unwrap();
+        let mailbox = service.get(&(), id.clone()).await.unwrap().mailbox.unwrap();
         assert_eq!(mailbox.quota, Some(2048));
 
-        service.delete(id.clone()).await.unwrap();
+        service.delete(&(), id.clone()).await.unwrap();
         assert!(matches!(
-            service.get(id).await,
+            service.get(&(), id).await,
             Err(scimd::Error::NotFound(_))
         ));
     }

@@ -8,8 +8,10 @@ pub enum Error {
     #[error("Method not implemented")]
     MethodNotImplemented,
 
-    #[error("Conflict")]
-    Conflict,
+    /// A uniqueness constraint was violated, such as a `userName` that is already taken. The
+    /// detail says which.
+    #[error("Conflict. Details={0}")]
+    Conflict(String),
 
     #[error("Unauthorized")]
     Unauthorized,
@@ -38,7 +40,8 @@ impl Error {
     pub fn get_detail(&self) -> Option<String> {
         match &self {
             Self::InternalError(_) | Self::Unauthorized => None,
-            Self::BadRequest(v)
+            Self::Conflict(v)
+            | Self::BadRequest(v)
             | Self::InvalidValue(v)
             | Self::InvalidFilter(v)
             | Self::PayloadTooLarge(v)
@@ -52,7 +55,7 @@ impl Error {
         match &self {
             Self::InternalError(_) => "internal_error",
             Self::MethodNotImplemented => "not_implemented",
-            Self::Conflict => "conflict",
+            Self::Conflict(_) => "conflict",
             Self::Unauthorized => "unauthorized",
             Self::NotFound(_) => "not_found",
             Self::BadRequest(_) => "bad_request",
@@ -65,6 +68,8 @@ impl Error {
 
     pub fn scim_type(&self) -> Option<&'static str> {
         match &self {
+            // RFC 7644 section 3.12 has no other `scimType` for a 409.
+            Self::Conflict(_) => Some("uniqueness"),
             Self::InvalidValue(_) => Some("invalidValue"),
             Self::InvalidFilter(_) => Some("invalidFilter"),
             Self::PayloadTooLarge(_) => Some("tooLarge"),
@@ -82,7 +87,7 @@ impl Error {
         match &self {
             Self::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::MethodNotImplemented => StatusCode::NOT_IMPLEMENTED,
-            Self::Conflict => StatusCode::CONFLICT,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) | Self::InvalidValue(_) | Self::InvalidFilter(_) => {

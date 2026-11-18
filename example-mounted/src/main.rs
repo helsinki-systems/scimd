@@ -39,11 +39,11 @@ impl Users {
 
 #[scimd::async_trait]
 impl ResourceService<User> for Users {
-    async fn list(&self, _filter: FilterQuery) -> Result<ListResponse<User>> {
+    async fn list(&self, _ctx: &(), _filter: FilterQuery) -> Result<ListResponse<User>> {
         Ok(ListResponse::new(self.store().values().cloned().collect()))
     }
 
-    async fn create(&self, mut user: User) -> Result<User> {
+    async fn create(&self, _ctx: &(), mut user: User) -> Result<User> {
         let id = user
             .id
             .clone()
@@ -57,14 +57,14 @@ impl ResourceService<User> for Users {
         Ok(user)
     }
 
-    async fn get(&self, id: String) -> Result<User> {
+    async fn get(&self, _ctx: &(), id: String) -> Result<User> {
         self.store()
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::NotFound(id))
     }
 
-    async fn delete(&self, id: String) -> Result<()> {
+    async fn delete(&self, _ctx: &(), id: String) -> Result<()> {
         self.store()
             .remove(&id)
             .map(|_| ())
